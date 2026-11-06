@@ -1,0 +1,86 @@
+{
+  "" : {
+    "const-values" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary.swiftconstvalues",
+    "dependencies" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary.d",
+    "diagnostics" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary.dia",
+    "emit-module-dependencies" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary-emit-module.dia",
+    "pch" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AAMacro-primary.swiftdeps"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/App.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/App.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/App.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/App.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/AutoPlanner.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AutoPlanner.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AutoPlanner.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/AutoPlanner.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/CardPicker.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/CardPicker.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/CardPicker.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/CardPicker.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/DebugLog.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DebugLog.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DebugLog.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DebugLog.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/MacroEngine.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/MacroEngine.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/MacroEngine.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/MacroEngine.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/Models.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Models.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Models.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Models.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/Regions.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Regions.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Regions.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Regions.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Core/Store.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Store.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Store.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Store.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Input/InputController.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/InputController.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/InputController.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/InputController.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Input/WindowManager.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/WindowManager.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/WindowManager.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/WindowManager.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Recording/Recorder.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Recorder.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Recorder.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Recorder.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/UI/DockPanel.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DockPanel.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DockPanel.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DockPanel.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/UI/RootView.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/RootView.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/RootView.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/RootView.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Vision/Matcher.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Matcher.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Matcher.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Matcher.o"
+  },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Vision/ScreenCapture.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/ScreenCapture.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/ScreenCapture.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/ScreenCapture.o"
+  }
+}
