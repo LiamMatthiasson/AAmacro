@@ -5,11 +5,11 @@
       "name" : "AAMacro",
       "path" : "/Users/liam/Desktop/AAMacro",
       "projects" : [
-        "f927ab32d04fd6b9ad6994a1178c6988e4bd80631c2fd1f9721306624c6d1a50",
+        "e74d621f3d42dd31688e4468036c7fe3cfdb69a65b099b0e3bd5fbf55cec8d05",
         "ac01363d17bd391fccee442b1a6e42a2927d6c33d1cb0cf7d9280c9ea9a382b9"
       ]
     },
-    "signature" : "9e144c28776c3f30092b3ca383de7e4ed6b188e5d01d95c8727620bf740de9bb",
+    "signature" : "123052dd02e40992ca0caf6bf60b96717f9b20eb88e900b8c56cee9441ea5783",
     "type" : "workspace"
   },
   {
@@ -297,6 +297,14 @@
               {
                 "fileType" : "sourcecode.swift",
                 "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_12",
+                "name" : "Recording/TeachListener.swift",
+                "path" : "Recording/TeachListener.swift",
+                "sourceTree" : "<group>",
+                "type" : "file"
+              },
+              {
+                "fileType" : "sourcecode.swift",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_13",
                 "name" : "UI/DockPanel.swift",
                 "path" : "UI/DockPanel.swift",
                 "sourceTree" : "<group>",
@@ -304,7 +312,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_13",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_14",
                 "name" : "UI/RootView.swift",
                 "path" : "UI/RootView.swift",
                 "sourceTree" : "<group>",
@@ -312,7 +320,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_14",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_15",
                 "name" : "Vision/Matcher.swift",
                 "path" : "Vision/Matcher.swift",
                 "sourceTree" : "<group>",
@@ -320,7 +328,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_15",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_16",
                 "name" : "Vision/ScreenCapture.swift",
                 "path" : "Vision/ScreenCapture.swift",
                 "sourceTree" : "<group>",
@@ -434,6 +442,14 @@
               {
                 "fileType" : "sourcecode.swift",
                 "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_12",
+                "name" : "Recording/TeachListener.swift",
+                "path" : "Recording/TeachListener.swift",
+                "sourceTree" : "<group>",
+                "type" : "file"
+              },
+              {
+                "fileType" : "sourcecode.swift",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_13",
                 "name" : "UI/DockPanel.swift",
                 "path" : "UI/DockPanel.swift",
                 "sourceTree" : "<group>",
@@ -441,7 +457,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_13",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_14",
                 "name" : "UI/RootView.swift",
                 "path" : "UI/RootView.swift",
                 "sourceTree" : "<group>",
@@ -449,7 +465,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_14",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_15",
                 "name" : "Vision/Matcher.swift",
                 "path" : "Vision/Matcher.swift",
                 "sourceTree" : "<group>",
@@ -457,7 +473,7 @@
               },
               {
                 "fileType" : "sourcecode.swift",
-                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_15",
+                "guid" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_16",
                 "name" : "Vision/ScreenCapture.swift",
                 "path" : "Vision/ScreenCapture.swift",
                 "sourceTree" : "<group>",
@@ -483,12 +499,12 @@
       "projectIsPackage" : "true",
       "projectName" : "AAMacro",
       "targets" : [
-        "84f5e708378a8e5a6c2be7a04e1bbe1c5195bd2e4d4eb7b4bb553a0b46d5087c",
-        "cfcaa710f2fe59913a90df4bca31c50b44b40555bd03750486c51902f7b962b5",
+        "173f46799f4696736fc9d552bf3ba4faee4fe9fde9c35995d84faa8a214074a3",
+        "0eae927dc95a7541bf8ceca61f834dab880737bb7b715afbc67fed614303b0e7",
         "fe610e91c16dc4c11d44fc49db2168235cf67fd22f4e63f9fda369cc934f3f6e"
       ]
     },
-    "signature" : "f927ab32d04fd6b9ad6994a1178c6988e4bd80631c2fd1f9721306624c6d1a50",
+    "signature" : "e74d621f3d42dd31688e4468036c7fe3cfdb69a65b099b0e3bd5fbf55cec8d05",
     "type" : "project"
   },
   {
@@ -736,6 +752,15 @@
 
               ],
               "removeHeadersOnCopy" : "false"
+            },
+            {
+              "codeSignOnCopy" : "false",
+              "fileReference" : "PACKAGE:aamacro::MAINGROUP::REF_2::REF_16",
+              "guid" : "PACKAGE-PRODUCT:aamacro_AAMacro.AAMacro::BUILDPHASE_0::16",
+              "platformFilters" : [
+
+              ],
+              "removeHeadersOnCopy" : "false"
             }
           ],
           "guid" : "PACKAGE-PRODUCT:aamacro_AAMacro.AAMacro::BUILDPHASE_0",
@@ -761,7 +786,7 @@
       "productTypeIdentifier" : "com.apple.product-type.tool",
       "type" : "standard"
     },
-    "signature" : "84f5e708378a8e5a6c2be7a04e1bbe1c5195bd2e4d4eb7b4bb553a0b46d5087c",
+    "signature" : "173f46799f4696736fc9d552bf3ba4faee4fe9fde9c35995d84faa8a214074a3",
     "type" : "target"
   },
   {
@@ -1040,6 +1065,15 @@
 
               ],
               "removeHeadersOnCopy" : "false"
+            },
+            {
+              "codeSignOnCopy" : "false",
+              "fileReference" : "PACKAGE:aamacro::MAINGROUP::REF_3::REF_16",
+              "guid" : "PACKAGE-TARGET:AAMacro-3004F7F2558D4AFB-testable::BUILDPHASE_0::16",
+              "platformFilters" : [
+
+              ],
+              "removeHeadersOnCopy" : "false"
             }
           ],
           "guid" : "PACKAGE-TARGET:AAMacro-3004F7F2558D4AFB-testable::BUILDPHASE_0",
@@ -1065,7 +1099,7 @@
       "productTypeIdentifier" : "org.swift.product-type.common.object",
       "type" : "standard"
     },
-    "signature" : "cfcaa710f2fe59913a90df4bca31c50b44b40555bd03750486c51902f7b962b5",
+    "signature" : "0eae927dc95a7541bf8ceca61f834dab880737bb7b715afbc67fed614303b0e7",
     "type" : "target"
   },
   {

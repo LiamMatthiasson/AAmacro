@@ -50,6 +50,12 @@ struct MapRecording: Codable, Identifiable, Hashable {
 /// What a Scan learned about one map: where ground and hill units can stand (checked with the
 /// range circle at each point), and where enemies walk. All points are window fractions taken
 /// from the spawn point with the standard camera, so they line up in every later run.
+/// A spot you placed a unit yourself in Teach mode.
+struct TaughtSpot: Codable, Hashable {
+    var slot: Int
+    var at: NormPoint
+}
+
 struct MapProfile: Codable, Identifiable {
     var id: String { name }
     var name: String
@@ -66,6 +72,8 @@ struct MapProfile: Codable, Identifiable {
     var suspectHill: [NormPoint]? = nil
     /// Reference screenshot of the view at scan time (file in references/), for the camera check.
     var referenceImage: String? = nil
+    /// Teach mode: where you placed each slot yourself, in the order you placed them.
+    var taught: [TaughtSpot]? = nil
 }
 
 /// User-tunable settings shown on the Settings tab.
@@ -112,6 +120,9 @@ struct MacroSettings: Codable {
     var autoSteps: String = ""
     /// On a map with no scan: once the team is placed, scan it mid-match and save it for next time.
     var learnWhilePlaying: Bool = true
+    /// Teach mode: on a map you haven't taught yet, the macro does lobby/code/vote/results but
+    /// YOU place the units; it saves where each slot went and reuses those spots in auto mode.
+    var teachMode: Bool = false
     /// Placement cost per slot, typed in on the Unit cards (overrides reading it off the hotbar).
     var unitCost: [Int: Int] = [:]
     /// Units the game won't let you sell — never used to test-place spots during a scan.
@@ -164,6 +175,7 @@ extension MacroSettings {
         get(.hillSlots, &hillSlots)
         get(.autoSteps, &autoSteps)
         get(.learnWhilePlaying, &learnWhilePlaying)
+        get(.teachMode, &teachMode)
         get(.unitCost, &unitCost)
         get(.unsellableSlots, &unsellableSlots)
         get(.cameraReset, &cameraReset)

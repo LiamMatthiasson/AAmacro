@@ -220,6 +220,10 @@ struct FrameRightColumn: View {
                         Toggle("Save winning layouts", isOn: $store.settings.autoSaveWins)
                         Toggle("Learn unscanned maps while playing", isOn: $store.settings.learnWhilePlaying)
                             .help("Once the team is placed, scan the map mid-match and save it for next time.")
+                        Toggle("Teach mode (I place units on new maps)", isOn: $store.settings.teachMode)
+                            .help("On a map you haven't taught yet, you place the units yourself and pick cards; the macro saves where each slot went. Maps already taught play automatically. Turn off before sleeping.")
+                        Text("Taught maps: \(store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", ").isEmpty ? "none yet" : store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", "))")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
                         HStack {
                             Text("Place order")
                             SlotListField(slots: $store.settings.autoPlaceOrder)

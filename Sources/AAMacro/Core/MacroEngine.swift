@@ -716,13 +716,28 @@ final class MacroEngine: ObservableObject {
             return Matcher.find(t, in: img)?.point
         }
         if let p = seen("close_popup") { await input.click(p) }
+        // A results button the end-screen check didn't recognise ("Next", "Return to lobby",
+        // "Replay")? Click Next / Return and let the results flow take it from there.
+        if let lines = try? OCR.read(img, fast: true) {
+            if let back = lines.first(where: { OCR.norm($0.text).contains("returntolobby") }) {
+                say("Recovery: found Return to lobby — clicking it")
+                await input.click(back.center)
+                inStage = true; state = .results; return
+            }
+            if let next = lines.first(where: { Self.looksLikeNext($0.text) }) {
+                say("Recovery: found a Next button — clicking it")
+                await input.click(next.center)
+                sawResultPanel = true; inStage = true; state = .results; return
+            }
+        }
         if endScreen(in: img) != nil {
             // On a results screen (win or loss): run the results flow to click out of it.
             state = .results
         } else if (try? OCR.find("play", in: img, region: Region.lobbyHUD, exact: true)) != nil {
             inStage = false; state = .lobby
-        } else if inStage {
+        } else if inStage || Self.readWave(img) != nil {
             // Still mid-match (e.g. a placement failed): ride it out until the match ends.
+            inStage = true
             state = .results
         } else {
             try await Task.sleep(nanoseconds: lag(3_000_000_000))
@@ -1320,7 +1335,13 @@ final class MacroEngine: ObservableObject {
            let cur = try? await ScreenCapture.captureRoblox(),
            let m = Matcher.viewShift(reference: ref, current: cur) {
             if m.score > 0.25 {
-                say(String(format: "⚠️ View doesn't match the %@ scan (difference %.2f) — placing live instead", prof.name, m.score))
+                // Weather, other players' units and effects change the picture a lot even when the
+                // camera is the same — throwing the scan away made every repeat map start from zero.
+                // Use it anyway (unshifted, unless the shift clearly helped); every spot is still
+                // checked before and after clicking.
+                if m.score < m.unshifted - 0.05 { mapShift = (m.dx, m.dy) }
+                say(String(format: "View looks different from the %@ scan (difference %.2f — weather/units) — using the scan anyway, checking each spot", prof.name, m.score))
+                activeProfile = prof
                 return
             }
             mapShift = (m.dx, m.dy)
@@ -1480,6 +1501,12 @@ final class MacroEngine: ObservableObject {
         }
         say("Auto steps: " + steps.map(\.description).joined(separator: " → "))
         await loadProfileForMatch()
+        if s.teachMode, (activeProfile?.taught ?? []).isEmpty {
+            if try await runTeachMatch() { return }
+        }
+        if let t = activeProfile?.taught, !t.isEmpty {
+            say("Using your taught spots for \(activeProfile?.name ?? "this map") (\(t.count) units)")
+        }
         if let prof = activeProfile {
             say("Using saved scan for \(prof.name) (\(prof.ground.count) ground / \(prof.hill.count) hill spots)")
             enemyLane = prof.lane.map(shifted)
@@ -1635,12 +1662,27 @@ final class MacroEngine: ObservableObject {
             let bad = ((hill ? activeProfile?.badHill : activeProfile?.badGround)?.map(shifted) ?? [])
                 + (hill ? blockedHill : blockedGround)
 
-            // Gather from every source, best sources first.
+            // Gather from every source, best sources first. Your taught spots for this slot come
+            // before everything (the n-th copy of a slot goes to the n-th spot you used for it).
             var picks: [NormPoint] = []
+            let taughtHere = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map { shifted($0.at) }
+            if !taughtHere.isEmpty {
+                let already = autoPlaced.filter { $0.slot == slot }.count
+                picks += Array(taughtHere.dropFirst(already)) + Array(taughtHere.prefix(already))
+            }
+            // Other slots' taught spots of the same kind are good backups.
+            picks += (activeProfile?.taught ?? []).filter { $0.slot != slot && s.hillSlots.contains($0.slot) == hill }.map { shifted($0.at) }
+            let taughtAll = picks
             if hill {
                 // Hills are big: the best bet is right around a hill unit that's already down.
-                picks += ringsAround(autoPlaced.filter { s.hillSlots.contains($0.slot) }.map(\.at),
+                picks += ringsAround(autoPlaced.filter { s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at),
                                      radii: widened ? [0.04, 0.06, 0.085, 0.11] : [0.035, 0.05, 0.07])
+            }
+            if !hill, (activeProfile?.ground.count ?? 0) < 15 {
+                // No good scan yet: the ground right beside units that already went down this
+                // match is proven placeable — far fewer wasted clicks than untested spots.
+                picks += ringsAround(autoPlaced.filter { !s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at),
+                                     radii: [0.04, 0.055])
             }
             if let prof = activeProfile { picks += profileSpots(prof, hill: hill, range: range, avoid: taken + tried) }
             if let planner {
@@ -1650,11 +1692,34 @@ final class MacroEngine: ObservableObject {
             if !hill || widened { picks += probeSpots(avoid: tried + taken) }
             // Hill units: only spots that are actually green in the overlay (when it shows green).
             if hill, let planner, planner.greenCellCount >= 40 {
-                picks = picks.filter { planner.overlayCounts(at: $0).green >= 4 }
+                picks = picks.filter { p in taughtAll.contains(where: { $0.x == p.x && $0.y == p.y }) || planner.overlayCounts(at: p).green >= 4 }
             }
             var unique: [NormPoint] = []
-            for p in picks where !near(unique, p, 0.012) && !near(tried, p) && !near(bad, p, 0.012) && !near(taken, p, 0.025) {
+            // Failed/blocked spots are avoided with some margin: a spot 1 % away from one that
+            // didn't work almost never works either.
+            for p in picks where !near(unique, p, 0.012) && !near(tried, p, 0.02) && !near(bad, p, 0.022) && !near(taken, p, 0.025) {
                 unique.append(p)
+            }
+            // Ground units: the safe spots are right beside the road/route enemies walk — not the
+            // corners and outskirts. Order by distance to the route (spots ON the road go last).
+            if !hill {
+                let lanePts = laneReference(planner: planner)
+                if !lanePts.isEmpty {
+                    let proven = Set((activeProfile?.ground ?? []).map(shifted).map { "\(Int($0.x * 200)),\(Int($0.y * 200))" })
+                    func key(_ p: NormPoint) -> Double {
+                        let d = lanePts.map { lp -> Double in
+                            let dx = lp.x - p.x, dy = (lp.y - p.y) * 0.63
+                            return (dx * dx + dy * dy).squareRoot()
+                        }.min() ?? 1
+                        if taughtAll.contains(where: { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }) {
+                            return -1 + Double(taughtAll.firstIndex(where: { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }) ?? 0) * 0.001
+                        }
+                        if d < 0.02 { return 5 + d }                      // on the road itself
+                        let bonus = proven.contains("\(Int(p.x * 200)),\(Int(p.y * 200))") ? 0.015 : 0
+                        return d - bonus
+                    }
+                    unique = unique.map { ($0, key($0)) }.sorted { $0.1 < $1.1 }.map(\.0)
+                }
             }
             if unique.isEmpty {
                 if !widened {
@@ -1702,6 +1767,75 @@ final class MacroEngine: ObservableObject {
         }
         say("⚠️ Couldn't place slot \(slot) in 4 minutes — will retry it later")
         return false
+    }
+
+    /// Teach mode: you place the units, the macro watches. Every "slot key + click" that makes the
+    /// unit panel pop up is saved as a taught spot. Cards are yours too this match (the macro stays
+    /// hands-off until the results screen). Returns false if the map name couldn't be read.
+    private func runTeachMatch() async throws -> Bool {
+        let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
+        guard !name.isEmpty else { say("Teach mode: couldn't read the map name — playing auto this match"); return false }
+        say("🎓 TEACH MODE — \(name) isn't taught yet. Place your units yourself now and pick the cards; I'm watching where each slot goes. Saved when the match ends.")
+        let listener = TeachListener()
+        listener.start()
+        guard listener.isListening else { say("⚠️ Teach mode couldn't watch your input (Accessibility / Input Monitoring) — playing auto"); return false }
+        defer { listener.stop() }
+
+        var spots: [TaughtSpot] = []
+        var lastEndCheck = Date()
+        while true {
+            try Task.checkCancellation()
+            for c in listener.take(olderThan: 0.7) {
+                guard let img = try? await ScreenCapture.captureRoblox() else { continue }
+                if Self.unitPanelOpen(img) {
+                    spots.append(TaughtSpot(slot: c.slot, at: unshifted(c.at)))
+                    say(String(format: "🎓 Learned: slot %d at (%.3f, %.3f) — %d so far", c.slot, c.at.x, c.at.y, spots.count))
+                } else {
+                    say(String(format: "🎓 Slot %d click at (%.3f, %.3f) didn't place — not saved", c.slot, c.at.x, c.at.y))
+                }
+            }
+            if Date().timeIntervalSince(lastEndCheck) > 3 {
+                lastEndCheck = Date()
+                if let img = try? await ScreenCapture.captureRoblox(), endScreen(in: img) != nil { break }
+            }
+            try await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        // You were playing — don't let the "stuck" timer count that against the results screen.
+        runDeadline = Date().addingTimeInterval(Double((store?.settings.stuckMinutes ?? 45) * 60))
+        guard !spots.isEmpty else { say("🎓 No placements seen this match — \(name) is still untaught"); return true }
+        var prof = store?.profiles.first(where: { $0.name == name })
+            ?? MapProfile(name: name, ground: [], hill: [], lane: enemyLane, scannedAt: Date())
+        prof.taught = spots
+        let hills = store?.settings.hillSlots ?? []
+        for sp in spots {
+            if hills.contains(sp.slot) {
+                if !prof.hill.contains(where: { abs($0.x - sp.at.x) < 0.012 && abs($0.y - sp.at.y) < 0.015 }) { prof.hill.append(sp.at) }
+                prof.badHill?.removeAll { abs($0.x - sp.at.x) < 0.02 && abs($0.y - sp.at.y) < 0.03 }
+            } else {
+                if !prof.ground.contains(where: { abs($0.x - sp.at.x) < 0.012 && abs($0.y - sp.at.y) < 0.015 }) { prof.ground.append(sp.at) }
+                prof.badGround?.removeAll { abs($0.x - sp.at.x) < 0.02 && abs($0.y - sp.at.y) < 0.03 }
+            }
+        }
+        store?.saveProfile(prof)
+        activeProfile = prof
+        say("🎓 Saved \(spots.count) taught spots for \(name): " + spots.map { "slot \($0.slot)" }.joined(separator: ", "))
+        return true
+    }
+
+    /// Where the route is: the saved scan's lane, else where enemies were seen this match,
+    /// else the red lane from the overlay colours. Thinned out to keep the sort quick.
+    private func laneReference(planner: AutoPlanner?) -> [NormPoint] {
+        var pts: [NormPoint] = []
+        if let prof = activeProfile, prof.lane.count >= 25 { pts = prof.lane.map(shifted) }
+        else if enemyLane.count >= 25 { pts = enemyLane }
+        else if let planner {
+            let w = AutoPlanner.cols, h = AutoPlanner.rows
+            pts = (0..<(w * h)).filter { planner.path[$0] }
+                .map { NormPoint(x: (Double($0 % w) + 0.5) / Double(w), y: (Double($0 / w) + 0.5) / Double(h)) }
+        }
+        let step = max(1, pts.count / 300)
+        return stride(from: 0, to: pts.count, by: step).map { pts[$0] }
     }
 
     /// Points on rings around the given spots (8 directions per ring) — e.g. around our own hill

@@ -68,6 +68,11 @@
     "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Recorder.bc",
     "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/Recorder.o"
   },
+  "/Users/liam/Desktop/AAMacro/Sources/AAMacro/Recording/TeachListener.swift" : {
+    "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/TeachListener.o",
+    "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/TeachListener.bc",
+    "object" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/TeachListener.o"
+  },
   "/Users/liam/Desktop/AAMacro/Sources/AAMacro/UI/DockPanel.swift" : {
     "index-unit-output-path" : "/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DockPanel.o",
     "llvm-bc" : "/Users/liam/Desktop/AAMacro/.build/out/Intermediates.noindex/AAMacro.build/Release/AAMacro-p.build/Objects-normal/arm64/DockPanel.bc",
