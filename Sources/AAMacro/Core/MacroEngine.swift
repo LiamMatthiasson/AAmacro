@@ -1501,9 +1501,15 @@ final class MacroEngine: ObservableObject {
         }
         say("Auto steps: " + steps.map(\.description).joined(separator: " → "))
         await loadProfileForMatch()
+        teachingThisMatch = false
         if s.teachMode, (activeProfile?.taught ?? []).isEmpty {
-            if try await runTeachMatch() { return }
+            let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
+            if !name.isEmpty {
+                teachingThisMatch = true; teachName = name; teachSpots = []
+                say("🎓 TEACH MODE — \(name) isn't taught yet. When a unit is due I'll ask you to place it; I do everything else (upgrades, cards).")
+            }
         }
+        defer { teachListener?.stop(); teachListener = nil }
         if let t = activeProfile?.taught, !t.isEmpty {
             say("Using your taught spots for \(activeProfile?.name ?? "this map") (\(t.count) units)")
         }
@@ -1644,6 +1650,17 @@ final class MacroEngine: ObservableObject {
             list.contains { abs($0.x - p.x) < r && abs($0.y - p.y) < r * 1.4 }
         }
 
+        if teachingThisMatch {
+            if let price = await cost(of: slot) {
+                _ = try await poll(timeout: 900, what: "\(price)¥ for slot \(slot)") { img -> Bool? in self.enoughYen(img, price) }
+            }
+            if let p = try await teachPlace(slot) {
+                autoPlaced.append((slot, p))
+                return true
+            }
+            if try await checkResults() { return false }
+        }
+
         while Date() < deadline {
             round += 1
             try Task.checkCancellation()
@@ -1769,58 +1786,66 @@ final class MacroEngine: ObservableObject {
         return false
     }
 
-    /// Teach mode: you place the units, the macro watches. Every "slot key + click" that makes the
-    /// unit panel pop up is saved as a taught spot. Cards are yours too this match (the macro stays
-    /// hands-off until the results screen). Returns false if the map name couldn't be read.
-    private func runTeachMatch() async throws -> Bool {
-        let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
-        guard !name.isEmpty else { say("Teach mode: couldn't read the map name — playing auto this match"); return false }
-        say("🎓 TEACH MODE — \(name) isn't taught yet. Place your units yourself now and pick the cards; I'm watching where each slot goes. Saved when the match ends.")
-        let listener = TeachListener()
-        listener.start()
-        guard listener.isListening else { say("⚠️ Teach mode couldn't watch your input (Accessibility / Input Monitoring) — playing auto"); return false }
-        defer { listener.stop() }
+    /// Teach mode state for this match.
+    private var teachingThisMatch = false
+    private var teachName = ""
+    private var teachSpots: [TaughtSpot] = []
+    private var teachListener: TeachListener?
 
-        var spots: [TaughtSpot] = []
-        var lastEndCheck = Date()
-        while true {
-            try Task.checkCancellation()
-            for c in listener.take(olderThan: 0.7) {
-                guard let img = try? await ScreenCapture.captureRoblox() else { continue }
-                if Self.unitPanelOpen(img) {
-                    spots.append(TaughtSpot(slot: c.slot, at: unshifted(c.at)))
-                    say(String(format: "🎓 Learned: slot %d at (%.3f, %.3f) — %d so far", c.slot, c.at.x, c.at.y, spots.count))
-                } else {
-                    say(String(format: "🎓 Slot %d click at (%.3f, %.3f) didn't place — not saved", c.slot, c.at.x, c.at.y))
-                }
+    /// Teach mode: instead of picking a spot, ask YOU to place this slot, watch where you click,
+    /// confirm it went down (unit panel pops up), save it, and carry on with the steps.
+    /// Returns nil if you didn't place it in 3 minutes (the macro then places it itself).
+    private func teachPlace(_ slot: Int) async throws -> NormPoint? {
+        if teachListener == nil {
+            let l = TeachListener(); l.start()
+            guard l.isListening else {
+                say("⚠️ Teach mode can't watch your input (Accessibility / Input Monitoring) — placing automatically")
+                teachingThisMatch = false; return nil
             }
-            if Date().timeIntervalSince(lastEndCheck) > 3 {
-                lastEndCheck = Date()
-                if let img = try? await ScreenCapture.captureRoblox(), endScreen(in: img) != nil { break }
+            teachListener = l
+        }
+        _ = teachListener?.take(olderThan: 0)                       // forget older clicks
+        let n = autoPlaced.filter { $0.slot == slot }.count + 1
+        say("🎓 Your turn: place SLOT \(slot)\(n > 1 ? " (copy #\(n))" : "") where you want it — press \(slot), click the spot.")
+        let deadline = Date().addingTimeInterval(180)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            if try await checkResults() { return nil }
+            try await handleCards()                                   // cards are still mine
+            for c in teachListener?.take(olderThan: 0.7) ?? [] {
+                guard c.slot == slot else { say("🎓 That was slot \(c.slot) — I'm waiting for slot \(slot)"); continue }
+                guard let img = try? await ScreenCapture.captureRoblox(), Self.unitPanelOpen(img) else {
+                    say(String(format: "🎓 Click at (%.3f, %.3f) didn't place — try another spot", c.at.x, c.at.y)); continue
+                }
+                await input.click(Region.unitPanelClose)              // close the panel it opened
+                saveTaught(slot: slot, at: c.at)
+                say(String(format: "🎓 Learned slot %d at (%.3f, %.3f) ✓", slot, c.at.x, c.at.y))
+                return c.at
             }
             try await Task.sleep(nanoseconds: 300_000_000)
         }
+        say("🎓 No placement for slot \(slot) in 3 min — placing it myself")
+        return nil
+    }
 
-        // You were playing — don't let the "stuck" timer count that against the results screen.
-        runDeadline = Date().addingTimeInterval(Double((store?.settings.stuckMinutes ?? 45) * 60))
-        guard !spots.isEmpty else { say("🎓 No placements seen this match — \(name) is still untaught"); return true }
-        var prof = store?.profiles.first(where: { $0.name == name })
-            ?? MapProfile(name: name, ground: [], hill: [], lane: enemyLane, scannedAt: Date())
-        prof.taught = spots
-        let hills = store?.settings.hillSlots ?? []
-        for sp in spots {
-            if hills.contains(sp.slot) {
-                if !prof.hill.contains(where: { abs($0.x - sp.at.x) < 0.012 && abs($0.y - sp.at.y) < 0.015 }) { prof.hill.append(sp.at) }
-                prof.badHill?.removeAll { abs($0.x - sp.at.x) < 0.02 && abs($0.y - sp.at.y) < 0.03 }
-            } else {
-                if !prof.ground.contains(where: { abs($0.x - sp.at.x) < 0.012 && abs($0.y - sp.at.y) < 0.015 }) { prof.ground.append(sp.at) }
-                prof.badGround?.removeAll { abs($0.x - sp.at.x) < 0.02 && abs($0.y - sp.at.y) < 0.03 }
-            }
+    /// Adds a taught spot to the map's file right away (so nothing is lost if the match is cut short).
+    private func saveTaught(slot: Int, at p: NormPoint) {
+        let q = unshifted(p)
+        teachSpots.append(TaughtSpot(slot: slot, at: q))
+        var prof = store?.profiles.first(where: { $0.name == teachName }) ?? activeProfile
+            ?? MapProfile(name: teachName, ground: [], hill: [], lane: enemyLane, scannedAt: Date())
+        prof.taught = teachSpots
+        let isHill = store?.settings.hillSlots.contains(slot) ?? false
+        func near(_ l: [NormPoint]) -> Bool { l.contains { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 } }
+        if isHill {
+            if !near(prof.hill) { prof.hill.append(q) }
+            prof.badHill?.removeAll { abs($0.x - q.x) < 0.02 && abs($0.y - q.y) < 0.03 }
+        } else {
+            if !near(prof.ground) { prof.ground.append(q) }
+            prof.badGround?.removeAll { abs($0.x - q.x) < 0.02 && abs($0.y - q.y) < 0.03 }
         }
         store?.saveProfile(prof)
         activeProfile = prof
-        say("🎓 Saved \(spots.count) taught spots for \(name): " + spots.map { "slot \($0.slot)" }.joined(separator: ", "))
-        return true
     }
 
     /// Where the route is: the saved scan's lane, else where enemies were seen this match,
