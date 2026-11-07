@@ -149,6 +149,7 @@ private struct FramePanel<Content: View>: View {
 struct FrameTopBar: View {
     @EnvironmentObject var engine: MacroEngine
     @EnvironmentObject var recorder: Recorder
+    @EnvironmentObject var store: Store
     @State private var screen = Permissions.screenRecording
     @State private var access = Permissions.accessibility
     @State private var roblox = WindowManager.robloxFrame() != nil
@@ -161,6 +162,11 @@ struct FrameTopBar: View {
             HStack(spacing: 10) {
                 Circle().fill(running ? .green : (recorder.isRecording ? .red : .gray)).frame(width: 8, height: 8)
                 Text("AA Macro").font(.system(size: 12, weight: .heavy))
+                Picker("", selection: $store.settings.mode) {
+                    ForEach(GameMode.allCases) { m in Text(m.rawValue).tag(m) }
+                }
+                .labelsHidden().controlSize(.small).fixedSize().disabled(running)
+                .help("What to farm. More modes (Story, Infinite…) can be added later.")
                 Text(running ? engine.state.rawValue : (recorder.isRecording ? "recording" : "idle"))
                     .monospaced().foregroundStyle(.secondary)
                 Spacer()
@@ -221,6 +227,9 @@ struct FrameRightColumn: View {
                         Toggle("Learn unscanned maps while playing", isOn: $store.settings.learnWhilePlaying)
                             .help("Once the team is placed, scan the map mid-match and save it for next time.")
                         Toggle("Teach mode (I place units on new maps)", isOn: $store.settings.teachMode)
+                        Toggle("   …only ask me for hill units", isOn: $store.settings.teachHillsOnly)
+                            .disabled(!store.settings.teachMode)
+                            .help("Ground units are placed automatically (they already do well); you only place the hill units once per map.")
                             .help("On a map you haven't taught yet, you place the units yourself and pick cards; the macro saves where each slot went. Maps already taught play automatically. Turn off before sleeping.")
                         Text("Taught maps: \(store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", ").isEmpty ? "none yet" : store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", "))")
                             .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -237,6 +246,8 @@ struct FrameRightColumn: View {
                             .scrollContentBackground(.hidden)
                             .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
                         Text("One per line: place 6 · place 2 x4 · upgrade 6 max · upgrade 1 +3 · upgrade all max · wait wave 10 · wait 30")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                        Text("Map-specific steps: add a line like [Storm Hideout] and that map's steps below it. Steps above the first [Map] line are for every other map.")
                             .font(.system(size: 9)).foregroundStyle(.secondary)
                         let check = MacroEngine.parseSteps(store.settings.autoSteps)
                         if !check.problems.isEmpty {
@@ -406,6 +417,10 @@ struct FrameBottomStrip: View {
                     .tint(engine.scanning ? .red : .teal).buttonStyle(.borderedProminent)
                     .disabled(engine.state != .idle || recorder.isRecording)
                     .help("Start the stage and place one unit yourself first. Then: teleports to spawn, sets the camera, then tests every spot for ground + hill units and watches enemies to learn the lane. Name = the box above, or read from the title.")
+                    Button(engine.teachNowActive ? "Stop teaching" : "Teach now") { engine.teachNow(name: mapName) }
+                        .tint(engine.teachNowActive ? .red : .orange).buttonStyle(.borderedProminent)
+                        .disabled(recorder.isRecording || engine.scanning)
+                        .help("Teach placements any time. Macro running: it asks you for units for the rest of this match and the next one. Macro stopped: just play — every unit you place is saved for this map.")
                     Button("Test scan") { engine.testScan(name: mapName) }
                         .disabled(engine.state != .idle || recorder.isRecording || engine.scanning)
                         .help("In a stage on a scanned map: places each unit on its saved spots (middle of the map first) and reports how many spots were good.")

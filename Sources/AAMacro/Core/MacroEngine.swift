@@ -182,7 +182,7 @@ final class MacroEngine: ObservableObject {
             return
         }
         DockPanel.shared.releaseKeyboard()
-        say("Starting. Press F6 any time to stop.")
+        say("Starting \((store?.settings.mode ?? .summerHunt).rawValue) mode. Press F6 any time to stop.")
         stayAwake(true)
         startCardWatcher()
         startedAt = Date(); wins = 0; losses = 0; lossStreak = 0; runDeadline = nil
@@ -217,6 +217,7 @@ final class MacroEngine: ObservableObject {
         stopCardWatcher()
         task?.cancel(); task = nil
         scanTask?.cancel(); scanTask = nil; scanning = false
+        if manualTeachTask == nil { teachNowActive = false; teachNextMatch = false }
         startedAt = nil
         state = .idle
         say("Stopped.")
@@ -244,7 +245,10 @@ final class MacroEngine: ObservableObject {
                 }
                 switch state {
                 case .lobby:        try await doLobby()
-                case .walkToEvent:  try await doWalkToEvent()
+                case .walkToEvent:
+                    switch store?.settings.mode ?? .summerHunt {
+                    case .summerHunt: try await doWalkToEvent()
+                    }
                 case .matchmaking:  try await doMatchmaking()
                 case .enterCode:    break   // handled inside doMatchmaking (needs the code it read)
                 case .loadingStage: try await doVote()
@@ -256,6 +260,7 @@ final class MacroEngine: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                if Task.isCancelled || state == .idle { return }      // stopped mid-wait: not a failure
                 say("⚠️ \(error.localizedDescription)")
                 await DebugLog.snapshot("fail-\(state.rawValue)")
                 state = .recovering
@@ -285,7 +290,10 @@ final class MacroEngine: ObservableObject {
         let candidates = lines.filter { l in
             !Region.lobbyHUD.contains(CGPoint(x: l.box.midX, y: l.box.midY)) && l.box.midY < 0.85
         }
-        guard let button = candidates.first(where: { Self.dismissWords.contains(OCR.norm($0.text)) }) else { return false }
+        guard let button = candidates.first(where: { l in
+            let t = OCR.norm(l.text)
+            return Self.dismissWords.contains(t) || (t.count <= 8 && ["claim", "close", "decline"].contains { t.hasPrefix($0) })
+        }) else { return false }
         say("Popup: clicking \"\(button.text)\"")
         await input.click(button.center)
         try? await Task.sleep(nanoseconds: lag(800_000_000))
@@ -337,6 +345,7 @@ final class MacroEngine: ObservableObject {
         let play = try await poll(timeout: 90, what: "Play button") { img in
             // Already standing on the pad? Skip straight to matchmaking.
             if try OCR.find("join matchmaking", in: img, region: Region.centerPopup) != nil { return NormPoint(x: -1, y: -1) }
+            if try OCR.find("enter this text", in: img, region: Region.centerPopup, fast: true) != nil { return NormPoint(x: -1, y: -1) }
             return try OCR.find("play", in: img, region: Region.lobbyHUD, exact: true)?.center
         }
         if play.x < 0 { state = .matchmaking; return }
@@ -357,6 +366,7 @@ final class MacroEngine: ObservableObject {
         func popupUp() async -> Bool {
             guard let img = try? await ScreenCapture.captureRoblox() else { return false }
             return (try? OCR.find("join matchmaking", in: img, region: Region.centerPopup, fast: true)) != nil
+                || (try? OCR.find("enter this text", in: img, region: Region.centerPopup, fast: true)) != nil
         }
         // 1) Recorded walk, in 0.3 s slices so we can stop early.
         for action in store?.settings.lobbyWalk ?? [] {
@@ -402,20 +412,29 @@ final class MacroEngine: ObservableObject {
         let find: NormPoint
         do {
             find = try await poll(timeout: 20, what: "Find Match button") { img in
-                try OCR.find("find match", in: img, region: Region.centerPopup)?.center
+                // The code popup is already up (left open by an earlier try)? Go straight to it.
+                if try OCR.find("enter this text", in: img, region: Region.centerPopup, fast: true) != nil {
+                    return NormPoint(x: -1, y: -1)
+                }
+                return try OCR.find("find match", in: img, region: Region.centerPopup)?.center
             }
         } catch {
             say("⚠️ Couldn't see Find Match — saving a screenshot")
             _ = await DebugLog.snapshot("no-find-match")
             throw error
         }
-        await input.click(find)
-        say("Clicked Find Match — reading the code")
+        if find.x >= 0 {
+            await input.click(find)
+            say("Clicked Find Match — reading the code")
+        } else {
+            say("Code popup already open — reading the code")
+        }
 
         for attempt in 1...4 {
             // 1) Read the code — and only accept it once the popup has STOPPED moving
             //    (it animates in; positions read mid-animation make the click miss).
             var lastSubmit: CGPoint?
+            var lastCode = ""
             var snapped = false
             let start = Date()
             let (code, codeLine, submit) = try await poll(timeout: 25, what: "matchmaking code") { img -> (String, OCR.Line, OCR.Line)? in
@@ -428,14 +447,20 @@ final class MacroEngine: ObservableObject {
                 guard let prompt = lines.first(where: { let n = OCR.norm($0.text)
                           return n.contains("enterthistext") || n.contains("enterthis") || n.contains("pleaseenter") || n.contains("thistextin") }),
                       let submit = lines.first(where: { OCR.norm($0.text).hasPrefix("submit") }) else { return nil }
-                guard let codeLine = lines
-                        .filter({ $0.box.minY > prompt.box.maxY && $0.box.maxY < submit.box.minY })
-                        .sorted(by: { $0.box.minY < $1.box.minY }).first else { return nil }
+                // The code sits centred right under the prompt. Ignore name tags behind the popup
+                // ("Elf" off to the side) and whatever junk an earlier try left typed in the box.
+                let between = lines.filter { $0.box.minY > prompt.box.maxY - 0.005 && $0.box.maxY < submit.box.minY }
+                guard let codeLine = between
+                        .filter({ abs($0.box.midX - prompt.box.midX) < 0.08 })
+                        .filter({ (4...10).contains($0.text.filter { $0.isLetter || $0.isNumber }.count) })
+                        .min(by: { $0.box.minY < $1.box.minY }) else { return nil }
                 let code = codeLine.text.filter { $0.isLetter || $0.isNumber }
-                guard (4...10).contains(code.count) else { return nil }
-                let here = CGPoint(x: submit.box.midX, y: submit.box.midY)
-                defer { lastSubmit = here }
-                guard let prev = lastSubmit, abs(prev.x - here.x) < 0.008, abs(prev.y - here.y) < 0.008 else { return nil }
+                // Settled = the same code read twice in a row with the popup in about the same place.
+                // (Was: Submit within 0.8 % — a pulsing Submit button never passed that.)
+                let here = CGPoint(x: prompt.box.midX, y: prompt.box.midY)
+                defer { lastSubmit = here; lastCode = code }
+                guard let prev = lastSubmit, lastCode == code,
+                      abs(prev.x - here.x) < 0.02, abs(prev.y - here.y) < 0.02 else { return nil }
                 return (code, codeLine, submit)
             }
             say("Code: \(code) (attempt \(attempt))")
@@ -449,20 +474,25 @@ final class MacroEngine: ObservableObject {
                 // One click in the middle of the box (this is what reliably focuses it).
                 await input.click(box)
                 try await Task.sleep(nanoseconds: lag(400_000_000))
-                if typing > 1 {
-                    // Retry: move the cursor to the end with → (no extra clicks — those can land
-                    // outside the box and drop focus), then delete everything.
-                    for _ in 0..<16 { await input.key("right", holdMs: 20) }
-                    for _ in 0..<20 { await input.key("backspace", holdMs: 25) }
-                    try await Task.sleep(nanoseconds: lag(150_000_000))
-                }
-                await input.type(code.lowercased(), extraDelayMs: s.typeDelayMs)
+                // Always clear first: move to the end with → (no extra clicks — those can land outside
+                // the box and drop focus), then delete plenty. Junk from an earlier try (or dropped
+                // keys during lag) otherwise piles up: one night it grew to 25 characters.
+                for _ in 0..<30 { await input.key("right", holdMs: 15) }
+                for _ in 0..<40 { await input.key("backspace", holdMs: 20) }
+                try await Task.sleep(nanoseconds: lag(150_000_000))
+                // Lag drops keys ("6890" for "68903"): type slower on every retry.
+                await input.type(code.lowercased(), extraDelayMs: s.typeDelayMs * typing)
                 try await Task.sleep(nanoseconds: lag(500_000_000))            // let Roblox draw the text
                 let inBox = await readInputBox(below: codeLine, above: submit)
                 if Self.codesMatch(inBox, code) { entered = true; break }
                 say("Box shows \"\(inBox.isEmpty ? "?" : inBox)\" — retyping (\(typing)/3)")
             }
-            guard entered else { say("⚠️ Couldn't get the code into the box"); continue }
+            guard entered else {
+                say("⚠️ Couldn't get the code into the box — cancelling for a fresh popup")
+                await closeMatchmakingPopups()
+                try await Task.sleep(nanoseconds: lag(1_500_000_000))
+                throw MacroError.timedOut("code entry (will walk back onto the pad)")
+            }
 
             // 3) Submit, then wait for the popup to actually close.
             say("Code entered ✓ — submitting")
@@ -634,6 +664,21 @@ final class MacroEngine: ObservableObject {
         say("Waiting for the match to end")
         _ = try await poll(timeout: 3600, what: "end of match") { [self] img in endScreen(in: img) }
         say(lastResultWasVictory ? "Result: VICTORY" : "Result: no victory seen (counting as a loss)")
+        // Per-map record + how far it got, so weak maps stand out (give them their own [Map] steps).
+        if let img = try? await ScreenCapture.captureRoblox(), let lines = try? OCR.read(img, fast: true) {
+            let wave = lines.first { OCR.norm($0.text).contains("wavescompleted") }
+                .flatMap { l in l.text.split(separator: ":").last.flatMap { Int($0.filter(\.isNumber)) } }
+                .flatMap { $0 > 0 ? $0 : nil }
+            let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? ""
+            if !name.isEmpty, var prof = store?.profiles.first(where: { $0.name == name }) {
+                if lastResultWasVictory { prof.wins = (prof.wins ?? 0) + 1 } else { prof.losses = (prof.losses ?? 0) + 1 }
+                store?.saveProfile(prof)
+                if activeProfile?.name == name { activeProfile = prof }
+                say("\(name): \(lastResultWasVictory ? "won" : "lost")\(wave.map { " at wave \($0)" } ?? "") — record \(prof.wins ?? 0)W / \(prof.losses ?? 0)L")
+            } else if let wave {
+                say("Waves completed: \(wave)")
+            }
+        }
         await DebugLog.snapshot(lastResultWasVictory ? "victory" : "result")
 
         var leftStage = false
@@ -674,6 +719,7 @@ final class MacroEngine: ObservableObject {
             }
         }
         sawResultPanel = false
+        if teachNowActive, !teachNextMatch, manualTeachTask == nil { teachNowActive = false }
         if !leftStage { say("⚠️ Didn't see the lobby after the results — recovering") }
 
         // (Winning auto layouts are no longer saved as recordings: the map's scan already learned
@@ -718,7 +764,7 @@ final class MacroEngine: ObservableObject {
         if let p = seen("close_popup") { await input.click(p) }
         // A results button the end-screen check didn't recognise ("Next", "Return to lobby",
         // "Replay")? Click Next / Return and let the results flow take it from there.
-        if let lines = try? OCR.read(img, fast: true) {
+        if let lines = try? OCR.read(img, fast: true), !Self.isSettingsMenu(lines.map { OCR.norm($0.text) }) {
             if let back = lines.first(where: { OCR.norm($0.text).contains("returntolobby") }) {
                 say("Recovery: found Return to lobby — clicking it")
                 await input.click(back.center)
@@ -780,6 +826,88 @@ final class MacroEngine: ObservableObject {
     }
 
     @Published var scanning = false
+
+    // MARK: Teach now (button) — teach any time, without turning on Teach mode or restarting
+    @Published var teachNowActive = false
+    private var manualTeachTask: Task<Void, Never>?
+    /// Set by "Teach now" while the macro runs: the next match is taught too.
+    private var teachNextMatch = false
+
+    /// "Teach now" button.
+    ///  • Macro running, in a match → from now on it asks you to place units (rest of this match),
+    ///    and the NEXT match is taught too (so units already placed this match get taught then).
+    ///  • Macro running, between matches → the next match is taught.
+    ///  • Macro stopped → you play; every unit you place (slot key + click, panel pops up) is saved
+    ///    for this map. Press again to stop.
+    func teachNow(name: String) {
+        if teachNowActive { stopTeachNow(); return }
+        let s = store?.settings ?? MacroSettings()
+        if state != .idle {
+            teachNowActive = true
+            teachNextMatch = true
+            if inStage, state == .playStage {
+                let n = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
+                if !n.isEmpty {
+                    if !teachingThisMatch { teachName = n; teachSpots = [] }
+                    teachingThisMatch = true
+                    say("🎓 Teach now: I'll ask you for \(s.teachHillsOnly ? "hill units" : "units") from here on in this match, and teach the next match too.")
+                    return
+                }
+            }
+            say("🎓 Teach now: the next match will be taught.")
+            return
+        }
+        startManualTeach(name: name)
+    }
+
+    private func stopTeachNow() {
+        teachNextMatch = false
+        if let t = manualTeachTask {
+            t.cancel(); manualTeachTask = nil
+            say("🎓 Teaching stopped — \(teachSpots.count) spot(s) saved for \(teachName)")
+        } else {
+            say("🎓 Teach now cancelled (spots already learned stay saved)")
+        }
+        teachNowActive = false
+    }
+
+    private func startManualTeach(name: String) {
+        teachNowActive = true
+        manualTeachTask = Task { [weak self] in
+            guard let self else { return }
+            var title = name
+            if title.isEmpty, let img = try? await ScreenCapture.captureRoblox() {
+                title = (try? OCR.read(img, region: Region.stageTitle).map(\.text).joined(separator: " ")) ?? ""
+            }
+            let raw = name.isEmpty ? Self.mapName(fromTitle: title) : name
+            let mapName = self.store?.canonicalName(raw) ?? raw
+            guard !mapName.isEmpty else {
+                self.say("🎓 Couldn't read the map name — type it in the Map name box, then press Teach now")
+                self.teachNowActive = false; self.manualTeachTask = nil; return
+            }
+            self.teachName = mapName; self.teachSpots = []; self.mapShift = (0, 0)
+            self.activeProfile = self.store?.profiles.first { $0.name == mapName }
+            let l = TeachListener(); l.start()
+            guard l.isListening else {
+                self.say("⚠️ Teach can't watch your input (Accessibility / Input Monitoring)")
+                self.teachNowActive = false; self.manualTeachTask = nil; return
+            }
+            self.say("🎓 Teaching \(mapName): place your units (slot key, then click). Each one that lands is saved. Press Stop teaching when done.")
+            while !Task.isCancelled {
+                for c in l.take(olderThan: 0.7) {
+                    guard let img = try? await ScreenCapture.captureRoblox() else { continue }
+                    if Self.unitPanelOpen(img) {
+                        self.saveTaught(slot: c.slot, at: c.at)
+                        self.say(String(format: "🎓 Learned slot %d at (%.3f, %.3f) ✓", c.slot, c.at.x, c.at.y))
+                    } else {
+                        self.say(String(format: "🎓 Slot %d click at (%.3f, %.3f) didn't place — not saved", c.slot, c.at.x, c.at.y))
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            l.stop()
+        }
+    }
     @Published var scanProgress = ""
     private var scanTask: Task<Void, Never>?
 
@@ -1081,10 +1209,19 @@ final class MacroEngine: ObservableObject {
         if OCR.norm(title).contains("vote") { return "" }
         var t = title
         // Everything after the mode is junk the reader picked up ("… Summer Hunt ЛAASA").
-        if let r = t.range(of: "summer hunt", options: .caseInsensitive) { t = String(t[..<r.lowerBound]) }
+        // "Summer Hunt" and misreads of it ("Smmer Hunt", "Summer Hnt", "Sumer Hunt").
+        if let r = t.range(of: #"s[a-z]{0,2}m{1,2}[a-z]{0,2}r\s*h[a-z]{0,2}n?t"#, options: [.regularExpression, .caseInsensitive]) {
+            t = String(t[..<r.lowerBound])
+        }
+        // Boss HP and loading text that sometimes ride along ("68250/68250 Loading…").
+        if let r = t.range(of: #"\d+\s*/\s*\d+|loading"#, options: [.regularExpression, .caseInsensitive]) { t = String(t[..<r.lowerBound]) }
         // Stray symbols the reader adds in front ("•Planet Greenie", "Ouou •Planet…") and non-Latin junk.
         if let dot = t.lastIndex(where: { "•*·".contains($0) }) { t = String(t[t.index(after: dot)...]) }
         t = String(t.unicodeScalars.filter { $0.isASCII }.map(Character.init))
+        // Junk the reader puts in front ("ve O walled city"): drop leading 1–2 letter fragments.
+        var words = t.split(separator: " ").map(String.init)
+        while words.count > 1, let f = words.first, f.filter(\.isLetter).count <= 2 { words.removeFirst() }
+        t = words.joined(separator: " ")
         for junk in ["Summer Hunt", "Infinite Mode", "Infinite", "Story Mode", "Story", "Raid", "Challenge",
                      "Legend Stage", "Tournament Stage", "Mode"] {
             t = t.replacingOccurrences(of: junk, with: "", options: .caseInsensitive)
@@ -1339,17 +1476,40 @@ final class MacroEngine: ObservableObject {
                 // camera is the same — throwing the scan away made every repeat map start from zero.
                 // Use it anyway (unshifted, unless the shift clearly helped); every spot is still
                 // checked before and after clicking.
-                if m.score < m.unshifted - 0.05 { mapShift = (m.dx, m.dy) }
+                if m.score < m.unshifted - 0.05, abs(m.dx) <= 0.025, abs(m.dy) <= 0.035 { mapShift = (m.dx, m.dy) }
                 say(String(format: "View looks different from the %@ scan (difference %.2f — weather/units) — using the scan anyway, checking each spot", prof.name, m.score))
                 activeProfile = prof
                 return
             }
-            mapShift = (m.dx, m.dy)
-            say(String(format: "Camera check vs %@ scan: shift (%+.3f, %+.3f), difference %.2f", prof.name, m.dx, m.dy, m.score))
+            if abs(m.dx) > 0.025 || abs(m.dy) > 0.035 {
+                // The camera reset gives the same view every time; a shift this big is the
+                // matcher being fooled by weather/units. (A +9 % "shift" moved every spot off target.)
+                mapShift = (0, 0)
+                say(String(format: "Camera check vs %@ scan: ignoring a shift of (%+.3f, %+.3f) — too big to be real", prof.name, m.dx, m.dy))
+            } else {
+                mapShift = (m.dx, m.dy)
+                say(String(format: "Camera check vs %@ scan: shift (%+.3f, %+.3f), difference %.2f", prof.name, m.dx, m.dy, m.score))
+            }
         } else {
             say("Using the \(prof.name) scan (no reference view saved — rescan to enable the camera check)")
         }
         activeProfile = prof
+        cleanTaughtFromBad()
+    }
+
+    /// Your taught spots can never be "bad": remove any bad/suspect entries sitting on them
+    /// (a wrong camera shift once made the macro miss them and blame the spots).
+    private func cleanTaughtFromBad() {
+        guard var prof = activeProfile, let taught = prof.taught, !taught.isEmpty else { return }
+        func onTaught(_ p: NormPoint) -> Bool { taught.contains { abs($0.at.x - p.x) < 0.025 && abs($0.at.y - p.y) < 0.035 } }
+        let before = (prof.badGround?.count ?? 0) + (prof.badHill?.count ?? 0) + (prof.suspectGround?.count ?? 0) + (prof.suspectHill?.count ?? 0)
+        prof.badGround?.removeAll(where: onTaught); prof.badHill?.removeAll(where: onTaught)
+        prof.suspectGround?.removeAll(where: onTaught); prof.suspectHill?.removeAll(where: onTaught)
+        let after = (prof.badGround?.count ?? 0) + (prof.badHill?.count ?? 0) + (prof.suspectGround?.count ?? 0) + (prof.suspectHill?.count ?? 0)
+        if after < before {
+            store?.saveProfile(prof); activeProfile = prof
+            say("Cleared \(before - after) wrong 'bad spot' marks that were sitting on your taught spots")
+        }
     }
 
     private func shifted(_ p: NormPoint) -> NormPoint { NormPoint(x: p.x + mapShift.dx, y: p.y + mapShift.dy) }
@@ -1421,11 +1581,38 @@ final class MacroEngine: ObservableObject {
 
     /// Parses lines like:  place 6 · place 2 x4 · upgrade 6 max · upgrade 1 +3 · upgrade all max ·
     /// wait wave 10 · wait 30   (one per line, or separated by ';'). Unknown lines are reported.
+    /// The Steps box can hold per-map sections:
+    ///     place 6            ← default steps (every map without its own section)
+    ///     …
+    ///     [Storm Hideout]    ← only on Storm Hideout
+    ///     place 3 x2
+    ///     …
+    /// Returns the section for this map (name match ignores case/spaces/typos), else the default.
+    static func stepsText(for map: String, in text: String) -> (text: String, section: String?) {
+        var sections: [(name: String, lines: [String])] = [("", [])]
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                sections.append((String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces), []))
+            } else {
+                sections[sections.count - 1].lines.append(String(raw))
+            }
+        }
+        let m = OCR.norm(map)
+        if !m.isEmpty, let hit = sections.dropFirst().first(where: { sec in
+            let n = OCR.norm(sec.name)
+            return !n.isEmpty && (m.contains(n) || n.contains(m) || Store.editDistance(m, n) <= 2)
+        }) {
+            return (hit.lines.joined(separator: "\n"), hit.name)
+        }
+        return (sections[0].lines.joined(separator: "\n"), nil)
+    }
+
     static func parseSteps(_ text: String) -> (steps: [AutoStep], problems: [String]) {
         var steps: [AutoStep] = [], problems: [String] = []
         for raw in text.lowercased().split(whereSeparator: { $0 == "\n" || $0 == ";" }) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix("[") { continue }   // "[Map]" = section header
             let w = line.replacingOccurrences(of: "×", with: "x").split(separator: " ").map(String.init)
             func num(_ s: String) -> Int? { Int(s.filter(\.isNumber)) }
             var first = w.first ?? ""
@@ -1483,7 +1670,10 @@ final class MacroEngine: ObservableObject {
 
         // Build the step list.
         var steps: [AutoStep]
-        let parsed = Self.parseSteps(s.autoSteps)
+        let mapForSteps = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
+        let chosen = Self.stepsText(for: mapForSteps, in: s.autoSteps)
+        if let sec = chosen.section { say("Using the [\(sec)] steps for this map") }
+        let parsed = Self.parseSteps(chosen.text)
         if !parsed.steps.isEmpty {
             steps = parsed.steps
             for p in parsed.problems { say("⚠️ Didn't understand step \"\(p)\" — skipping it") }
@@ -1502,11 +1692,15 @@ final class MacroEngine: ObservableObject {
         say("Auto steps: " + steps.map(\.description).joined(separator: " → "))
         await loadProfileForMatch()
         teachingThisMatch = false
-        if s.teachMode, (activeProfile?.taught ?? []).isEmpty {
+        let taughtSlots = Set((activeProfile?.taught ?? []).map(\.slot))
+        let needTeach = s.teachHillsOnly ? !s.hillSlots.isEmpty && !s.hillSlots.allSatisfy(taughtSlots.contains)
+                                         : taughtSlots.isEmpty
+        if (s.teachMode && needTeach) || teachNextMatch {
+            teachNextMatch = false
             let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
             if !name.isEmpty {
                 teachingThisMatch = true; teachName = name; teachSpots = []
-                say("🎓 TEACH MODE — \(name) isn't taught yet. When a unit is due I'll ask you to place it; I do everything else (upgrades, cards).")
+                say("🎓 TEACH MODE — \(name) isn't taught yet. When \(s.teachHillsOnly ? "a hill unit" : "a unit") is due I'll ask you to place it; I do everything else.")
             }
         }
         defer { teachListener?.stop(); teachListener = nil }
@@ -1543,7 +1737,12 @@ final class MacroEngine: ObservableObject {
                 }
             case let .upgrade(slot, levels):
                 phantomSlots = []
+                // At most 3 minutes per upgrade step, so a slow upgrade (waiting on money) can't hold
+                // up placing the rest of the team. Leftover levels are done after the last step.
+                upgradeDeadline = Date().addingTimeInterval(180)
                 try await upgradeStep(slot: slot, levels: levels)
+                if let d = upgradeDeadline, Date() > d { say("Upgrade step took 3 min — moving on, finishing it after the last step") }
+                upgradeDeadline = nil
                 for sl in phantomSlots {
                     autoFull.remove(sl)
                     if try await placeSlot(sl) { try await upgradeStep(slot: sl, levels: levels) }
@@ -1587,6 +1786,9 @@ final class MacroEngine: ObservableObject {
 
     /// Upgrades every placed copy of a slot (or all units, priority order first).
     /// levels nil = until MAX (or the unit card's Max upgrade).
+    /// Set while a Steps "upgrade" step runs: upgrades stop at this time.
+    private var upgradeDeadline: Date?
+
     private func upgradeStep(slot: Int?, levels: Int?) async throws {
         let s = store?.settings ?? MacroSettings()
         let targets = autoPlaced.indices.filter { autoPlaced[$0].slot != 0 && (slot == nil || autoPlaced[$0].slot == slot) }
@@ -1601,6 +1803,7 @@ final class MacroEngine: ObservableObject {
             var remaining = levels ?? 99
             while remaining > 0 {
                 try Task.checkCancellation()
+                if let d = upgradeDeadline, Date() > d { return }
                 if try await checkResults() { return }
                 try await handleCards()
                 // One panel open, R pressed repeatedly (waits for money between levels).
@@ -1650,7 +1853,7 @@ final class MacroEngine: ObservableObject {
             list.contains { abs($0.x - p.x) < r && abs($0.y - p.y) < r * 1.4 }
         }
 
-        if teachingThisMatch {
+        if teachingThisMatch, !s.teachHillsOnly || s.hillSlots.contains(slot) {
             if let price = await cost(of: slot) {
                 _ = try await poll(timeout: 900, what: "\(price)¥ for slot \(slot)") { img -> Bool? in self.enoughYen(img, price) }
             }
@@ -1671,7 +1874,12 @@ final class MacroEngine: ObservableObject {
                     self.enoughYen(img, price)
                 }
             }
-            let planner = await readOverlay(slot: slot)
+            // A taught spot for this copy that hasn't been tried yet? Go straight to it — no need for
+            // the full overlay read (~2 s); placeOnce still checks the circle, limit and counter.
+            let copyNo = autoPlaced.filter { $0.slot == slot }.count
+            let freshTaught = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map(\.at)
+                .dropFirst(copyNo).contains { t in !near(tried, t, 0.02) && !near(blockedGround + blockedHill, t, 0.012) }
+            let planner = (round == 1 && freshTaught) ? nil : await readOverlay(slot: slot)
             if slotIsFull { autoFull.insert(slot); say("Slot \(slot) is at its placement limit"); return false }
             plannerUsed = planner ?? plannerUsed
             let hill = s.hillSlots.isEmpty ? (planner?.isHillOverlay ?? false) : s.hillSlots.contains(slot)
@@ -1682,14 +1890,23 @@ final class MacroEngine: ObservableObject {
             // Gather from every source, best sources first. Your taught spots for this slot come
             // before everything (the n-th copy of a slot goes to the n-th spot you used for it).
             var picks: [NormPoint] = []
-            let taughtHere = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map { shifted($0.at) }
+            let taughtHere = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map(\.at)   // never shifted
             if !taughtHere.isEmpty {
                 let already = autoPlaced.filter { $0.slot == slot }.count
                 picks += Array(taughtHere.dropFirst(already)) + Array(taughtHere.prefix(already))
             }
             // Other slots' taught spots of the same kind are good backups.
-            picks += (activeProfile?.taught ?? []).filter { $0.slot != slot && s.hillSlots.contains($0.slot) == hill }.map { shifted($0.at) }
+            picks += (activeProfile?.taught ?? []).filter { $0.slot != slot && s.hillSlots.contains($0.slot) == hill }.map(\.at)
             let taughtAll = picks
+            if hill {
+                // Hills are areas: right around any spot a hill unit is known to fit (taught, worked
+                // before, or our own hill unit this match), small circles first. Strict: each point
+                // still has to turn the range circle blue before it's clicked.
+                let anchors = (activeProfile?.taught ?? []).filter { s.hillSlots.contains($0.slot) }.map(\.at)
+                    + (activeProfile?.hill ?? []).map(shifted)
+                    + autoPlaced.filter { s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at)
+                picks += ringsAround(anchors, radii: [0.022, 0.035, 0.05])
+            }
             if hill {
                 // Hills are big: the best bet is right around a hill unit that's already down.
                 picks += ringsAround(autoPlaced.filter { s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at),
@@ -1714,7 +1931,11 @@ final class MacroEngine: ObservableObject {
             var unique: [NormPoint] = []
             // Failed/blocked spots are avoided with some margin: a spot 1 % away from one that
             // didn't work almost never works either.
-            for p in picks where !near(unique, p, 0.012) && !near(tried, p, 0.02) && !near(bad, p, 0.022) && !near(taken, p, 0.025) {
+            for p in picks where !near(unique, p, 0.012) && !near(tried, p, 0.02) && !near(taken, p, 0.025) {
+                // Saved "bad" marks never veto your taught spots (only this match's own failures do).
+                let isTaught = taughtAll.contains { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }
+                if !isTaught && near(bad, p, 0.022) { continue }
+                if isTaught && near(hill ? blockedHill : blockedGround, p, 0.012) { continue }
                 unique.append(p)
             }
             // Ground units: the safe spots are right beside the road/route enemies walk — not the
@@ -1751,8 +1972,12 @@ final class MacroEngine: ObservableObject {
             say("Slot \(slot) (\(hill ? "hill" : "ground")) round \(round): \(unique.count) candidate spots")
 
             var needMoney = false
+            var failedHere: [NormPoint] = []
             for target in unique.prefix(15) {
                 try Task.checkCancellation()
+                // Right next to a spot that just showed a red circle / didn't place? Almost always
+                // the same blocker (a unit, the lane edge) — skip, it saves a hover each.
+                if near(failedHere, target, 0.028) { continue }
                 if Date() > deadline { break }
                 let ci = cardInterrupts
                 let result = await placeOnce(slot: slot, at: target)
@@ -1771,10 +1996,12 @@ final class MacroEngine: ObservableObject {
                 case .cantAfford:
                     needMoney = true
                 case .failed:
-                    if lastFailWasClick { learnSpot(target, hill: hill, good: false) }
+                    let wasTaught = taughtAll.contains { abs($0.x - target.x) < 0.001 && abs($0.y - target.y) < 0.001 }
+                    if lastFailWasClick && !wasTaught { learnSpot(target, hill: hill, good: false) }
                     // Either way, don't try it again this match (another player's unit, most likely).
                     if lastFailWasBlock || lastFailWasClick {
                         if hill { blockedHill.append(target) } else { blockedGround.append(target) }
+                        if !wasTaught { failedHere.append(target) }
                     }
                     continue
                 }
@@ -1830,11 +2057,11 @@ final class MacroEngine: ObservableObject {
 
     /// Adds a taught spot to the map's file right away (so nothing is lost if the match is cut short).
     private func saveTaught(slot: Int, at p: NormPoint) {
-        let q = unshifted(p)
+        let q = p            // taught spots are stored exactly where you clicked (never shifted)
         teachSpots.append(TaughtSpot(slot: slot, at: q))
         var prof = store?.profiles.first(where: { $0.name == teachName }) ?? activeProfile
             ?? MapProfile(name: teachName, ground: [], hill: [], lane: enemyLane, scannedAt: Date())
-        prof.taught = teachSpots
+        prof.taught = (prof.taught ?? []).filter { old in !teachSpots.contains { $0.slot == old.slot } } + teachSpots
         let isHill = store?.settings.hillSlots.contains(slot) ?? false
         func near(_ l: [NormPoint]) -> Bool { l.contains { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 } }
         if isHill {
@@ -1960,8 +2187,18 @@ final class MacroEngine: ObservableObject {
         try? await Task.sleep(nanoseconds: lag(400_000_000))           // overlay fades out
         let base2 = try? await ScreenCapture.captureRoblox()
         let helds = [held1, held2].compactMap { $0 }
+        // Health bars (enemies and summons) are bright green: blank out the area around every
+        // health label ("2.4/2.4") seen in any of the shots so they can't pass for a hill.
+        var masks: [CGRect] = []
+        for img in [base1] + helds {
+            for l in (try? OCR.read(img, fast: true)) ?? [] {
+                let t = l.text.replacingOccurrences(of: " ", with: "")
+                guard t.range(of: #"\d+(\.\d+)?[KMB]?/\d+(\.\d+)?[KMB]?"#, options: [.regularExpression, .caseInsensitive]) != nil else { continue }
+                masks.append(CGRect(x: l.box.minX - 0.035, y: l.box.minY - 0.03, width: l.box.width + 0.07, height: l.box.height + 0.07))
+            }
+        }
         guard let held = helds.first,
-              let planner = AutoPlanner(bases: [base1] + [base2].compactMap { $0 }, helds: helds, enemyLane: enemyLane) else { return nil }
+              let planner = AutoPlanner(bases: [base1] + [base2].compactMap { $0 }, helds: helds, enemyLane: enemyLane, masks: masks) else { return nil }
 
         let range = store?.settings.autoRangePerSlot[slot] ?? 0.12
         let hs = store?.settings.hillSlots ?? []
@@ -2449,6 +2686,7 @@ final class MacroEngine: ObservableObject {
 
         for _ in 0..<times {
             if Task.isCancelled { break }
+            if let d = upgradeDeadline, Date() > d { break }
             // Cards can pop up mid-upgrade: vote first, then reopen the unit's panel.
             if let img = try? await ScreenCapture.captureRoblox(), Self.cardScreenVote(img) != nil {
                 cardVotedAt = .distantPast
@@ -2463,7 +2701,8 @@ final class MacroEngine: ObservableObject {
             }
             if let cost = current.cost {
                 do {
-                    _ = try await poll(timeout: 600, what: "\(cost)¥ for upgrade") { img -> Bool? in
+                    let limit = upgradeDeadline.map { max(3, $0.timeIntervalSinceNow) } ?? 600
+                    _ = try await poll(timeout: min(600, limit), what: "\(cost)¥ for upgrade") { img -> Bool? in
                         self.enoughYen(img, cost)
                     }
                 } catch {
@@ -2545,9 +2784,18 @@ final class MacroEngine: ObservableObject {
     }
     private static let lossWords = ["defeat", "youlost", "gameover", "failed", "youdied"]
 
+    /// The in-match Settings menu also has a "Return to Lobby" button (next to "Teleport back to
+    /// Spawn" and "Exit the game and return back to the lobby"). That is NOT the results screen —
+    /// clicking it once made the macro walk out of a match 20 s in.
+    static func isSettingsMenu(_ t: [String]) -> Bool {
+        t.contains { $0.contains("teleportbacktospawn") || $0.contains("exitthegame") || $0.contains("autoskip")
+                     || $0.contains("useifstuck") || $0.contains("disableautoopen") }
+    }
+
     private func endScreen(in img: CGImage) -> EndScreen? {
         guard let lines = try? OCR.read(img, fast: true) else { return nil }
         let t = lines.map { OCR.norm($0.text) }
+        if Self.isSettingsMenu(t) { return nil }
         // "Return to lobby" (top centre, next to Replay) — the last step.
         if let back = lines.first(where: { OCR.norm($0.text).contains("returntolobby") }) {
             return .lobbyButton(back.center)

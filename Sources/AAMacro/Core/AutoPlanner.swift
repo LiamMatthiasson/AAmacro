@@ -63,7 +63,8 @@ struct AutoPlanner {
     /// change on their own (wave banner popping up, enemies + their health bars walking past,
     /// damage numbers, card animations) are thrown out. Things that never change (unit card
     /// backgrounds, grass, HUD text) are never counted in the first place.
-    init?(bases: [CGImage], helds: [CGImage], enemyLane: [NormPoint] = []) {
+    /// `masks`: screen areas to ignore entirely (e.g. around enemy/summon health bars).
+    init?(bases: [CGImage], helds: [CGImage], enemyLane: [NormPoint] = [], masks: [CGRect] = []) {
         aspect = Double(WindowManager.lockedSize.height / WindowManager.lockedSize.width)
         var A = bases.compactMap(Self.cells)
         let B = helds.compactMap(Self.cells)
@@ -91,6 +92,7 @@ struct AutoPlanner {
             let i = y * w + x
             let pt = CGPoint(x: (Double(x) + 0.5) / Double(w), y: (Double(y) + 0.5) / Double(h))
             if Self.hud.contains(where: { $0.contains(pt) }) { hudM[i] = true; continue }
+            if masks.contains(where: { $0.contains(pt) }) { continue }
             // The two "no unit" shots must match each other (nothing moved there)…
             if A.count > 1, classify(A[0][i], A[1][i]) != .other { continue }
             // The holding shots are taken with the cursor in opposite corners, so the unit's red
@@ -98,10 +100,15 @@ struct AutoPlanner {
             // (the circle only hides it); red only if red in ALL of them (else it was the circle).
             var verdicts: [Cell] = []
             for a in A { for b in B { verdicts.append(classify(a[i], b[i])) } }
-            if verdicts.contains(.green) { g[i] = .green }
+            // Green needs to show in BOTH holding shots — or be green in one and red in the other
+            // (the range circle tinting it). Green in one and nothing in the other = something that
+            // moved, like a summon's green health bar walking down the track.
+            if verdicts.contains(.green), !verdicts.contains(.other) { g[i] = .green }
             else if !verdicts.isEmpty, verdicts.allSatisfy({ $0 == .red }) { g[i] = .red }
         }}
-        g = Self.dropSpecks(g, kind: .green, minSize: 40)   // real hill areas are big solid patches
+        // Real hill areas are big SOLID patches; health bars are long thin strips — drop anything
+        // where less than half the cells have green on all four sides.
+        g = Self.dropSpecks(g, kind: .green, minSize: 40, solidShare: 2)
         grid = g
         hudMask = hudM
         // Lane: where enemies were actually seen walking (reliable on every map), if we have
@@ -201,7 +208,7 @@ struct AutoPlanner {
 
     /// Removes small or hairline blobs of one colour (enemy health bars, sparkles, text).
     /// Real placement overlay comes in big solid patches.
-    private static func dropSpecks(_ g: [Cell], kind: Cell, minSize: Int = 15) -> [Cell] {
+    private static func dropSpecks(_ g: [Cell], kind: Cell, minSize: Int = 15, solidShare: Int = 4) -> [Cell] {
         let w = cols, h = rows, n = w * h
         var out = g
         var seen = [Bool](repeating: false, count: n)
@@ -220,7 +227,7 @@ struct AutoPlanner {
                 let x = i % w, y = i / w
                 return isK(x-1, y) && isK(x+1, y) && isK(x, y-1) && isK(x, y+1)
             }.count
-            if comp.count < minSize || solid * 4 < comp.count { for i in comp { out[i] = .other } }
+            if comp.count < minSize || solid * solidShare < comp.count { for i in comp { out[i] = .other } }
         }
         return out
     }
@@ -253,7 +260,12 @@ struct AutoPlanner {
         for dy in -1...1 { for dx in -1...1 {
             let x = cx + dx, y = cy + dy
             guard x >= 0, y >= 0, x < Self.cols, y < Self.rows else { continue }
-            switch grid[y * Self.cols + x] { case .green: g += 1; case .red: r += 1; default: break }
+            let c = y * Self.cols + x
+            switch grid[c] {
+            case .green: if distToPath[c] >= 2 { g += 1 }     // green on the track = a health bar, not a hill
+            case .red: r += 1
+            default: break
+            }
         }}
         return (g, r)
     }
@@ -280,7 +292,8 @@ struct AutoPlanner {
     /// - maxLaneDistance: how far from the red lane a spot may be (cells). Ground units: close.
     /// A cell a unit could stand on: hill units need green, ground units need "not red, not HUD".
     func placeable(_ c: Int, hill: Bool) -> Bool {
-        hill ? grid[c] == .green : (grid[c] != .red && !hudMask[c] && !path[c])
+        // Hills are never on the track: a green cell on/next to the lane is a summon's health bar.
+        hill ? (grid[c] == .green && distToPath[c] >= 2) : (grid[c] != .red && !hudMask[c] && !path[c])
     }
 
     func candidates(range: Double, taken: [NormPoint], covered: [Int: Int], hill: Bool,

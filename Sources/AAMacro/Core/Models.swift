@@ -50,6 +50,13 @@ struct MapRecording: Codable, Identifiable, Hashable {
 /// What a Scan learned about one map: where ground and hill units can stand (checked with the
 /// range circle at each point), and where enemies walk. All points are window fractions taken
 /// from the spawn point with the standard camera, so they line up in every later run.
+/// What the macro farms. Each mode has its own route from the lobby into a match; placement,
+/// cards, upgrades, results and recovery are shared. Only Summer Hunt exists so far.
+enum GameMode: String, Codable, CaseIterable, Identifiable {
+    case summerHunt = "Summer Hunt"
+    var id: String { rawValue }
+}
+
 /// A spot you placed a unit yourself in Teach mode.
 struct TaughtSpot: Codable, Hashable {
     var slot: Int
@@ -74,6 +81,9 @@ struct MapProfile: Codable, Identifiable {
     var referenceImage: String? = nil
     /// Teach mode: where you placed each slot yourself, in the order you placed them.
     var taught: [TaughtSpot]? = nil
+    /// Results on this map (to spot maps that need their own [Map] steps).
+    var wins: Int? = nil
+    var losses: Int? = nil
 }
 
 /// User-tunable settings shown on the Settings tab.
@@ -123,6 +133,10 @@ struct MacroSettings: Codable {
     /// Teach mode: on a map you haven't taught yet, the macro does lobby/code/vote/results but
     /// YOU place the units; it saves where each slot went and reuses those spots in auto mode.
     var teachMode: Bool = false
+    /// Which mode to farm (see GameMode).
+    var mode: GameMode = .summerHunt
+    /// Teach mode only asks you for hill units; ground units are placed automatically.
+    var teachHillsOnly: Bool = true
     /// Placement cost per slot, typed in on the Unit cards (overrides reading it off the hotbar).
     var unitCost: [Int: Int] = [:]
     /// Units the game won't let you sell — never used to test-place spots during a scan.
@@ -176,6 +190,8 @@ extension MacroSettings {
         get(.autoSteps, &autoSteps)
         get(.learnWhilePlaying, &learnWhilePlaying)
         get(.teachMode, &teachMode)
+        get(.mode, &mode)
+        get(.teachHillsOnly, &teachHillsOnly)
         get(.unitCost, &unitCost)
         get(.unsellableSlots, &unsellableSlots)
         get(.cameraReset, &cameraReset)

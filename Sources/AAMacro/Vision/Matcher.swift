@@ -187,7 +187,7 @@ extension Matcher {
     /// the score with no shift.
     static func viewShift(reference: CGImage, current: CGImage, maxShift: Int = 10)
         -> (dx: Double, dy: Double, score: Double, unshifted: Double)? {
-        let W = 160, H = 100
+        let W = 160
         guard let a = GrayImage(reference, scale: Double(W) / Double(reference.width)),
               let b = GrayImage(current, scale: Double(W) / Double(current.width)) else { return nil }
         let w = min(a.width, b.width), h = min(a.height, b.height)
