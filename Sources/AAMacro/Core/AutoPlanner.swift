@@ -67,8 +67,17 @@ struct AutoPlanner {
     init?(bases: [CGImage], helds: [CGImage], enemyLane: [NormPoint] = [], masks: [CGRect] = []) {
         aspect = Double(WindowManager.lockedSize.height / WindowManager.lockedSize.width)
         var A = bases.compactMap(Self.cells)
-        let B = helds.compactMap(Self.cells)
+        var B = helds.compactMap(Self.cells)
         guard !A.isEmpty, !B.isEmpty else { return nil }
+        // A holding shot where the overlay isn't showing (cursor over a button, overlay still fading
+        // in) would veto every real hill cell. Keep only shots with roughly as much bright overlay
+        // green as the best one.
+        if B.count > 1 {
+            func neon(_ c: (Double, Double, Double)) -> Bool { c.1 - max(c.0, c.2) > 0.45 && c.1 > 0.75 }
+            let counts = B.map { shot in (0..<shot.count).filter { neon(shot[$0]) && !neon(A[0][$0]) }.count }
+            let best = counts.max() ?? 0
+            if best >= 40 { B = zip(B, counts).filter { $0.1 * 10 >= best * 4 }.map(\.0) }
+        }
         let w = Self.cols, h = Self.rows
         var g = [Cell](repeating: .other, count: w * h)
         var hudM = [Bool](repeating: false, count: w * h)

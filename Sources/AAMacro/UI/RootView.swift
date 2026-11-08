@@ -7,7 +7,8 @@ struct RootView: View {
     var body: some View {
         TabView {
             RunView().tabItem { Label("Run", systemImage: "play.circle") }
-            MapsView().tabItem { Label("Maps", systemImage: "map") }
+            MapDataView().tabItem { Label("Map data", systemImage: "square.grid.3x3") }
+            MapsView().tabItem { Label("Recordings", systemImage: "map") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
@@ -213,5 +214,53 @@ struct SettingsView: View {
             get: { list.wrappedValue.joined(separator: "\n") },
             set: { list.wrappedValue = $0.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) }
         )
+    }
+}
+
+
+// MARK: - Map data tab: what the macro knows about each map
+
+struct MapDataView: View {
+    @EnvironmentObject var store: Store
+    @State private var confirmDelete: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Everything the macro has learned per map. Maps that lose a lot may need their own [Map] steps, or a fresh start with \"Forget layout\".")
+                .font(.caption).foregroundStyle(.secondary)
+            Table(store.profiles.sorted { $0.name < $1.name }) {
+                TableColumn("Map") { p in Text(p.name).bold() }
+                TableColumn("W / L") { p in
+                    let w = p.wins ?? 0, l = p.losses ?? 0
+                    Text("\(w) / \(l)").foregroundStyle(l > w ? .orange : .primary)
+                }.width(60)
+                TableColumn("Taught") { p in Text("\(p.taught?.count ?? 0)") }.width(55)
+                TableColumn("Learned") { p in Text("\(p.learned?.count ?? 0)") }.width(60)
+                TableColumn("Ground / Hill") { p in Text("\(p.ground.count) / \(p.hill.count)") }.width(90)
+                TableColumn("Bad spots") { p in Text("\((p.badGround?.count ?? 0) + (p.badHill?.count ?? 0))") }.width(70)
+                TableColumn("") { p in
+                    HStack {
+                        Button("Forget layout") {
+                            var q = p; q.learned = nil; store.saveProfile(q)
+                        }.help("Clears the automatically learned layout (keeps taught spots and the scan)")
+                        Button("Forget taught") {
+                            var q = p; q.taught = nil; store.saveProfile(q)
+                        }.disabled((p.taught ?? []).isEmpty)
+                        Button("Clear bad spots") {
+                            var q = p; q.badGround = nil; q.badHill = nil; q.suspectGround = nil; q.suspectHill = nil
+                            store.saveProfile(q)
+                        }.help("Use after changing your team: spots that failed for old units may suit new ones")
+                        Button("Delete", role: .destructive) { confirmDelete = p.name }
+                    }.controlSize(.small)
+                }
+            }
+        }
+        .alert("Delete everything saved for \(confirmDelete ?? "")?", isPresented: Binding(
+            get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })) {
+            Button("Delete", role: .destructive) { if let n = confirmDelete { store.deleteProfile(n) }; confirmDelete = nil }
+            Button("Cancel", role: .cancel) { confirmDelete = nil }
+        } message: {
+            Text("Its scan, taught spots, learned layout and record are removed. It will be learned again from scratch.")
+        }
     }
 }

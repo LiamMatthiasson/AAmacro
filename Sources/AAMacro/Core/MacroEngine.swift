@@ -171,6 +171,8 @@ final class MacroEngine: ObservableObject {
         guard task == nil else { return }
         runsCompleted = 0
         inStage = false; recoverAttempts = 0
+        Self.knownLimits = [:]          // team may have changed since the last start
+        DebugLog.cleanup()
         // Preflight: say exactly what's missing instead of silently doing nothing.
         var problems: [String] = []
         if !Permissions.screenRecording { problems.append("Screen Recording permission missing") }
@@ -1183,6 +1185,20 @@ final class MacroEngine: ObservableObject {
                 let t = (try? OCR.read(img, region: Region.stageTitle).map(\.text).joined(separator: " ")) ?? ""
                 let n = Self.mapName(fromTitle: t)
                 if !n.isEmpty, Self.plausibleTitle(t, name: n, known: store?.profiles.map(\.name) ?? []) {
+                    // Not a map we know ("Navw Ba")? It's often a misread: look a few more times
+                    // and take a reading that matches a known map, if one comes up.
+                    let known = store?.profiles.map(\.name) ?? []
+                    if !known.isEmpty, !known.contains(store?.canonicalName(n) ?? n) {
+                        for _ in 0..<6 {
+                            try? await Task.sleep(nanoseconds: lag(700_000_000))
+                            guard let img2 = try? await ScreenCapture.captureRoblox() else { continue }
+                            let t2 = (try? OCR.read(img2, region: Region.stageTitle).map(\.text).joined(separator: " ")) ?? ""
+                            let n2 = Self.mapName(fromTitle: t2)
+                            if !n2.isEmpty, known.contains(store?.canonicalName(n2) ?? n2) {
+                                say("Stage: \(t2) (re-read; first read was \"\(t)\")"); return t2
+                            }
+                        }
+                    }
                     say("Stage: \(t)"); return t
                 }
             }
@@ -1476,7 +1492,7 @@ final class MacroEngine: ObservableObject {
                 // camera is the same — throwing the scan away made every repeat map start from zero.
                 // Use it anyway (unshifted, unless the shift clearly helped); every spot is still
                 // checked before and after clicking.
-                if m.score < m.unshifted - 0.05, abs(m.dx) <= 0.025, abs(m.dy) <= 0.035 { mapShift = (m.dx, m.dy) }
+                mapShift = (0, 0)
                 say(String(format: "View looks different from the %@ scan (difference %.2f — weather/units) — using the scan anyway, checking each spot", prof.name, m.score))
                 activeProfile = prof
                 return
@@ -1487,7 +1503,7 @@ final class MacroEngine: ObservableObject {
                 mapShift = (0, 0)
                 say(String(format: "Camera check vs %@ scan: ignoring a shift of (%+.3f, %+.3f) — too big to be real", prof.name, m.dx, m.dy))
             } else {
-                mapShift = (m.dx, m.dy)
+                mapShift = (0, 0)     // camera reset is identical every match — never shift saved spots
                 say(String(format: "Camera check vs %@ scan: shift (%+.3f, %+.3f), difference %.2f", prof.name, m.dx, m.dy, m.score))
             }
         } else {
@@ -1528,14 +1544,16 @@ final class MacroEngine: ObservableObject {
             if hill { if !near(prof.hill) { prof.hill.append(q) }; prof.badHill?.removeAll { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 } }
             else { if !near(prof.ground) { prof.ground.append(q) }; prof.badGround?.removeAll { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 } }
         } else if hill {
-            if near(prof.suspectHill ?? []) && !near(prof.hill) {          // failed in an earlier match too
+            if near(prof.suspectHill ?? []) {          // failed in an earlier match too → bad for good
                 if !near(prof.badHill ?? []) { prof.badHill = (prof.badHill ?? []) + [q] }
+                prof.hill.removeAll { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 }   // a scan "good" that keeps failing isn't good
             } else if !near(prof.suspectHill ?? []) {
                 prof.suspectHill = (prof.suspectHill ?? []) + [q]
             }
         } else {
-            if near(prof.suspectGround ?? []) && !near(prof.ground) {
+            if near(prof.suspectGround ?? []) {
                 if !near(prof.badGround ?? []) { prof.badGround = (prof.badGround ?? []) + [q] }
+                prof.ground.removeAll { abs($0.x - q.x) < 0.012 && abs($0.y - q.y) < 0.015 }
             } else if !near(prof.suspectGround ?? []) {
                 prof.suspectGround = (prof.suspectGround ?? []) + [q]
             }
@@ -1707,6 +1725,9 @@ final class MacroEngine: ObservableObject {
         if let t = activeProfile?.taught, !t.isEmpty {
             say("Using your taught spots for \(activeProfile?.name ?? "this map") (\(t.count) units)")
         }
+        if let l = activeProfile?.learned, !l.isEmpty {
+            say("Learned layout for \(activeProfile?.name ?? "this map"): \(l.count) spots from earlier matches")
+        }
         if let prof = activeProfile {
             say("Using saved scan for \(prof.name) (\(prof.ground.count) ground / \(prof.hill.count) hill spots)")
             enemyLane = prof.lane.map(shifted)
@@ -1781,6 +1802,21 @@ final class MacroEngine: ObservableObject {
         // Steps done: keep spending money — priority units first, then everyone, until all MAX.
         say("Steps done — upgrading everything to MAX")
         try await upgradeStep(slot: nil, levels: nil)
+        // Units still missing? Keep trying every minute until the match ends — an empty slot is
+        // the most common reason for a loss.
+        var missing = unplaced.filter { !autoFull.contains($0) }
+        var tries = 0
+        while !missing.isEmpty, tries < 20 {
+            tries += 1
+            if try await checkResults() { return }
+            try? await sleepWatchingCards(60)
+            if try await checkResults() { return }
+            for slot in missing {
+                say("Still missing slot \(slot) — trying again")
+                if try await placeSlot(slot) { try await upgradeStep(slot: slot, levels: nil) }
+            }
+            missing = missing.filter { sl in !autoFull.contains(sl) && !autoPlaced.contains { $0.slot == sl } }
+        }
         say("Auto: everything maxed — waiting for the match to end")
     }
 
@@ -1848,6 +1884,7 @@ final class MacroEngine: ObservableObject {
         let deadline = Date().addingTimeInterval(240)
         var round = 0
         var widened = false
+        var gridMode = false
 
         func near(_ list: [NormPoint], _ p: NormPoint, _ r: Double = 0.015) -> Bool {
             list.contains { abs($0.x - p.x) < r && abs($0.y - p.y) < r * 1.4 }
@@ -1877,20 +1914,28 @@ final class MacroEngine: ObservableObject {
             // A taught spot for this copy that hasn't been tried yet? Go straight to it — no need for
             // the full overlay read (~2 s); placeOnce still checks the circle, limit and counter.
             let copyNo = autoPlaced.filter { $0.slot == slot }.count
-            let freshTaught = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map(\.at)
+            let ownTaught = (activeProfile?.taught ?? []).filter { $0.slot == slot }
+            let freshTaught = (ownTaught.isEmpty ? (activeProfile?.learned ?? []).filter { $0.slot == slot } : ownTaught).map(\.at)
                 .dropFirst(copyNo).contains { t in !near(tried, t, 0.02) && !near(blockedGround + blockedHill, t, 0.012) }
             let planner = (round == 1 && freshTaught) ? nil : await readOverlay(slot: slot)
             if slotIsFull { autoFull.insert(slot); say("Slot \(slot) is at its placement limit"); return false }
             plannerUsed = planner ?? plannerUsed
             let hill = s.hillSlots.isEmpty ? (planner?.isHillOverlay ?? false) : s.hillSlots.contains(slot)
             let taken = autoPlaced.map(\.at)
-            let bad = ((hill ? activeProfile?.badHill : activeProfile?.badGround)?.map(shifted) ?? [])
-                + (hill ? blockedHill : blockedGround)
+            // Unplaceable ground comes in patches (a building, a cliff, the lane edge), so a failed
+            // spot rules out the area around it — "dead zones" — not just the exact point.
+            let savedBad = (hill ? activeProfile?.badHill : activeProfile?.badGround)?.map(shifted) ?? []
+            let deadZones = hill ? blockedHill : blockedGround
+            let bad = savedBad + deadZones
 
             // Gather from every source, best sources first. Your taught spots for this slot come
             // before everything (the n-th copy of a slot goes to the n-th spot you used for it).
             var picks: [NormPoint] = []
-            let taughtHere = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map(\.at)   // never shifted
+            // Your taught spots first, then the layout learned from earlier matches (where each copy
+            // of this slot actually went down last time).
+            let learnedHere = (activeProfile?.learned ?? []).filter { $0.slot == slot }.map(\.at)
+            var taughtHere = (activeProfile?.taught ?? []).filter { $0.slot == slot }.map(\.at)
+            if taughtHere.isEmpty { taughtHere = learnedHere }
             if !taughtHere.isEmpty {
                 let already = autoPlaced.filter { $0.slot == slot }.count
                 picks += Array(taughtHere.dropFirst(already)) + Array(taughtHere.prefix(already))
@@ -1912,9 +1957,9 @@ final class MacroEngine: ObservableObject {
                 picks += ringsAround(autoPlaced.filter { s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at),
                                      radii: widened ? [0.04, 0.06, 0.085, 0.11] : [0.035, 0.05, 0.07])
             }
-            if !hill, (activeProfile?.ground.count ?? 0) < 15 {
-                // No good scan yet: the ground right beside units that already went down this
-                // match is proven placeable — far fewer wasted clicks than untested spots.
+            if !hill {
+                // Placeable ground also comes in patches: right beside units that already went down
+                // is the safest next spot.
                 picks += ringsAround(autoPlaced.filter { !s.hillSlots.contains($0.slot) && $0.slot != 0 }.map(\.at),
                                      radii: [0.04, 0.055])
             }
@@ -1924,23 +1969,32 @@ final class MacroEngine: ObservableObject {
                                             maxLaneDistance: 7, avoid: tried, limit: 12).map(\.spot)
             }
             if !hill || widened { picks += probeSpots(avoid: tried + taken) }
+            if gridMode { picks += denseGrid() }
             // Hill units: only spots that are actually green in the overlay (when it shows green).
             if hill, let planner, planner.greenCellCount >= 40 {
-                picks = picks.filter { p in taughtAll.contains(where: { $0.x == p.x && $0.y == p.y }) || planner.overlayCounts(at: p).green >= 4 }
+                if !gridMode {
+                    picks = picks.filter { p in taughtAll.contains(where: { $0.x == p.x && $0.y == p.y }) || planner.overlayCounts(at: p).green >= 4 }
+                }
             }
             var unique: [NormPoint] = []
             // Failed/blocked spots are avoided with some margin: a spot 1 % away from one that
             // didn't work almost never works either.
-            for p in picks where !near(unique, p, 0.012) && !near(tried, p, 0.02) && !near(taken, p, 0.025) {
+            for p in picks where !near(unique, p, 0.012) && !near(tried, p, gridMode ? 0.012 : 0.02) && !near(taken, p, 0.025) {
                 // Saved "bad" marks never veto your taught spots (only this match's own failures do).
                 let isTaught = taughtAll.contains { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }
-                if !isTaught && near(bad, p, 0.022) { continue }
+                if !isTaught && (near(savedBad, p, 0.03) || near(deadZones, p, gridMode ? 0.04 : 0.05)) { continue }
                 if isTaught && near(hill ? blockedHill : blockedGround, p, 0.012) { continue }
                 unique.append(p)
             }
             // Ground units: the safe spots are right beside the road/route enemies walk — not the
             // corners and outskirts. Order by distance to the route (spots ON the road go last).
-            if !hill {
+            let suspects = ((hill ? activeProfile?.suspectHill : activeProfile?.suspectGround) ?? []).map(shifted)
+            if hill {
+                // Hill: keep the order, but spots that failed in an earlier match go last.
+                let ok = unique.filter { p in !suspects.contains { abs($0.x - p.x) < 0.02 && abs($0.y - p.y) < 0.028 } }
+                unique = ok + unique.filter { p in !ok.contains { $0.x == p.x && $0.y == p.y } }
+            }
+            if !hill || gridMode {
                 let lanePts = laneReference(planner: planner)
                 if !lanePts.isEmpty {
                     let proven = Set((activeProfile?.ground ?? []).map(shifted).map { "\(Int($0.x * 200)),\(Int($0.y * 200))" })
@@ -1953,17 +2007,48 @@ final class MacroEngine: ObservableObject {
                             return -1 + Double(taughtAll.firstIndex(where: { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }) ?? 0) * 0.001
                         }
                         if d < 0.02 { return 5 + d }                      // on the road itself
+                        if suspects.contains(where: { abs($0.x - p.x) < 0.02 && abs($0.y - p.y) < 0.028 }) { return 3 + d }
                         let bonus = proven.contains("\(Int(p.x * 200)),\(Int(p.y * 200))") ? 0.015 : 0
                         return d - bonus
                     }
                     unique = unique.map { ($0, key($0)) }.sorted { $0.1 < $1.1 }.map(\.0)
                 }
             }
+            // Spread the tries out: after the best spot, the next one tried is at least ~6 % away
+            // from the ones before it (so one bad patch costs one click, not five). Taught/learned
+            // spots keep their place at the front.
+            do {
+                var spread: [NormPoint] = [], later: [NormPoint] = []
+                // Right beside one of our own units of the same kind is proven ground (hills come in
+                // patches too) — those spots aren't spread out, they're tried first.
+                let mine = autoPlaced.filter { $0.slot != 0 && s.hillSlots.contains($0.slot) == hill }.map(\.at)
+                for p in unique {
+                    let isTaught = taughtAll.contains { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 }
+                    let besideMine = near(mine, p, 0.06)
+                    if isTaught || besideMine || !near(spread, p, 0.06) { spread.append(p) } else { later.append(p) }
+                }
+                if !mine.isEmpty {
+                    // Order: taught/learned, then beside our units, then the spread-out rest.
+                    let t = spread.filter { p in taughtAll.contains { abs($0.x - p.x) < 0.001 && abs($0.y - p.y) < 0.001 } }
+                    let b = spread.filter { p in !t.contains { $0.x == p.x && $0.y == p.y } && near(mine, p, 0.06) }
+                    let r = spread.filter { p in !t.contains { $0.x == p.x && $0.y == p.y } && !b.contains { $0.x == p.x && $0.y == p.y } }
+                    spread = t + b + r
+                }
+                unique = spread + later
+            }
             if unique.isEmpty {
                 if !widened {
                     // Widen once: bigger rings around our units, spots beside the lane, the grid.
                     widened = true
                     say("Slot \(slot): no fresh spots — widening the search")
+                    continue
+                }
+                if !gridMode {
+                    // Sweep the whole map, nearest the route first. A wrong click costs ~1 s and
+                    // is remembered, so on a new map this finds the hills by itself; next time the
+                    // learned layout goes straight to them.
+                    gridMode = true
+                    say("Slot \(slot): trying a grid over the whole map, nearest the route first")
                     continue
                 }
                 say("Slot \(slot): nothing left to try right now — moving on, will retry later")
@@ -1973,19 +2058,26 @@ final class MacroEngine: ObservableObject {
 
             var needMoney = false
             var failedHere: [NormPoint] = []
+            var attemptNo = 0
             for target in unique.prefix(15) {
                 try Task.checkCancellation()
+                attemptNo += 1
                 // Right next to a spot that just showed a red circle / didn't place? Almost always
                 // the same blocker (a unit, the lane edge) — skip, it saves a hover each.
-                if near(failedHere, target, 0.028) { continue }
+                if near(failedHere, target, 0.05) { continue }
                 if Date() > deadline { break }
                 let ci = cardInterrupts
-                let result = await placeOnce(slot: slot, at: target)
+                let isTaughtTarget = taughtAll.contains { abs($0.x - target.x) < 0.001 && abs($0.y - target.y) < 0.001 }
+                // The pre-checks (overlay red, red range circle) misfire a lot. A failed click costs
+                // ~1 s and the game says so, so the best few guesses are always actually clicked.
+                let result = await placeOnce(slot: slot, at: target, trusted: isTaughtTarget,
+                                             forceTry: true)
                 if cardInterrupts != ci, case .failed = result { continue }   // cards interrupted it — try again later
                 tried.append(target)
                 switch result {
                 case .placed:
                     learnSpot(target, hill: hill, good: true)
+                    saveLearned(slot: slot, copy: autoPlaced.filter { $0.slot == slot }.count, at: target)
                     autoPlaced.append((slot, target))
                     autoLog.append(.place(slot: slot, at: target))
                     if let pl = plannerUsed { for c in pl.pathCells(near: target, range: range) { autoCovered[c, default: 0] += 1 } }
@@ -1997,7 +2089,9 @@ final class MacroEngine: ObservableObject {
                     needMoney = true
                 case .failed:
                     let wasTaught = taughtAll.contains { abs($0.x - target.x) < 0.001 && abs($0.y - target.y) < 0.001 }
-                    if lastFailWasClick && !wasTaught { learnSpot(target, hill: hill, good: false) }
+                    // Clicked and nothing placed, or the range circle turned red: remember it for
+                    // future matches (suspect after once, never tried again after twice).
+                    if (lastFailWasClick || lastFailWasCircle) && !wasTaught { learnSpot(target, hill: hill, good: false) }
                     // Either way, don't try it again this match (another player's unit, most likely).
                     if lastFailWasBlock || lastFailWasClick {
                         if hill { blockedHill.append(target) } else { blockedGround.append(target) }
@@ -2055,6 +2149,20 @@ final class MacroEngine: ObservableObject {
         return nil
     }
 
+    /// Remembers where the n-th copy of a slot actually went down (automatic layout learning).
+    private func saveLearned(slot: Int, copy: Int, at p: NormPoint) {
+        let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
+        guard !name.isEmpty else { return }
+        var prof = store?.profiles.first(where: { $0.name == name }) ?? activeProfile
+            ?? MapProfile(name: name, ground: [], hill: [], lane: enemyLane, scannedAt: Date())
+        var mine = (prof.learned ?? []).filter { $0.slot == slot }
+        let others = (prof.learned ?? []).filter { $0.slot != slot }
+        if copy < mine.count { mine[copy] = TaughtSpot(slot: slot, at: p) } else { mine.append(TaughtSpot(slot: slot, at: p)) }
+        prof.learned = others + mine
+        store?.saveProfile(prof)
+        if activeProfile == nil || activeProfile?.name == name { activeProfile = prof }
+    }
+
     /// Adds a taught spot to the map's file right away (so nothing is lost if the match is cut short).
     private func saveTaught(slot: Int, at p: NormPoint) {
         let q = p            // taught spots are stored exactly where you clicked (never shifted)
@@ -2073,6 +2181,18 @@ final class MacroEngine: ObservableObject {
         }
         store?.saveProfile(prof)
         activeProfile = prof
+    }
+
+    /// Every ~3.5 % over the playable map (not the HUD) — the last resort for ground units.
+    private func denseGrid() -> [NormPoint] {
+        var out: [NormPoint] = []
+        for y in stride(from: 0.23, through: 0.84, by: 0.035) {
+            for x in stride(from: 0.04, through: 0.78, by: 0.03) {
+                let p = NormPoint(x: x, y: y)
+                if !AutoPlanner.hud.contains(where: { $0.contains(CGPoint(x: p.x, y: p.y)) }) { out.append(p) }
+            }
+        }
+        return out
     }
 
     /// Where the route is: the saved scan's lane, else where enemies were seen this match,
@@ -2140,14 +2260,19 @@ final class MacroEngine: ObservableObject {
     /// Comparing the two isolates the green/red placement overlay from the map's own colors.
     /// Saves a picture of the plan to the logs folder.
     /// Opposite corners of the window over HUD (bottom-left charm, top-right buttons).
-    static let parkA = NormPoint(x: 0.03, y: 0.96)
-    static let parkB = NormPoint(x: 0.97, y: 0.13)
+    // Parked over the MAP, not over buttons: with the cursor on a HUD button (top-right P/i/FX)
+    // the game hides the placement overlay, and that shot made every hill interior look "not green"
+    // (Sand Village: only the edges of the hill squares were found, so picks landed off the hill).
+    static let parkA = NormPoint(x: 0.05, y: 0.80)
+    static let parkB = NormPoint(x: 0.74, y: 0.30)
     /// The park corner farthest from a spot, so the parked range circle doesn't cover it.
-    static func park(awayFrom p: NormPoint) -> NormPoint {
-        let opts = [parkA, parkB, NormPoint(x: 0.03, y: 0.13), NormPoint(x: 0.97, y: 0.96)]
-        return opts.max { a, b in
-            (a.x - p.x) * (a.x - p.x) + (a.y - p.y) * (a.y - p.y) < (b.x - p.x) * (b.x - p.x) + (b.y - p.y) * (b.y - p.y)
-        } ?? parkA
+    /// rank 0 = farthest corner from the spot, 1 = second farthest.
+    static func park(awayFrom p: NormPoint, rank: Int = 0) -> NormPoint {
+        let opts = [parkA, parkB, NormPoint(x: 0.05, y: 0.30), NormPoint(x: 0.74, y: 0.80)]
+        let sorted = opts.sorted { a, b in
+            (a.x - p.x) * (a.x - p.x) + (a.y - p.y) * (a.y - p.y) > (b.x - p.x) * (b.x - p.x) + (b.y - p.y) * (b.y - p.y)
+        }
+        return sorted[min(rank, sorted.count - 1)]
     }
 
     private func readOverlay(slot: Int) async -> AutoPlanner? {
@@ -2356,7 +2481,20 @@ final class MacroEngine: ObservableObject {
     private var phantomSlots: [Int] = []
 
     /// Reads "placed/limit" above a slot (only shown while holding that unit).
+    /// Each slot's placement limit as first read this session ("0/4" → 4). A later reading with a
+    /// different limit ("10/10" for a 4-limit unit) is a misread and is ignored.
+    static var knownLimits: [Int: Int] = [:]
+
     static func readSlotCounter(_ img: CGImage, slot: Int) -> (placed: Int, limit: Int)? {
+        guard let c = readSlotCounterRaw(img, slot: slot) else { return nil }
+        if let known = knownLimits[slot] {
+            return c.limit == known ? c : nil
+        }
+        knownLimits[slot] = c.limit
+        return c
+    }
+
+    static func readSlotCounterRaw(_ img: CGImage, slot: Int) -> (placed: Int, limit: Int)? {
         guard let lines = try? OCR.read(img, region: Region.slotCounter(slot)) else { return nil }
         for l in lines {
             let t = l.text.replacingOccurrences(of: " ", with: "")
@@ -2380,14 +2518,19 @@ final class MacroEngine: ObservableObject {
     /// True when the last .failed came from a real click that placed nothing (the spot itself is bad),
     /// not from a skip (red overlay / red circle) that might be a temporary blocker.
     private var lastFailWasClick = false
+    /// The last .failed was a RED range circle on hover (spot not placeable for this unit).
+    private var lastFailWasCircle = false
     /// Set when the match start already did teleport-to-spawn + camera, so it isn't done twice.
     private var didSpawnReset = false
 
-    private func placeOnce(slot: Int, at target: NormPoint, requireBlue: Bool = false) async -> PlaceResult {
+    /// trusted = one of your taught spots: skip the overlay "red" pre-check (it misfires near the
+    /// unit's own range circle); the hover circle and the after-click checks still apply.
+    private func placeOnce(slot: Int, at target: NormPoint, requireBlue: Bool = false, trusted: Bool = false,
+                           forceTry: Bool = false) async -> PlaceResult {
         lastFailWasClick = false
         lastFailWasBlock = false
+        lastFailWasCircle = false
         if Task.isCancelled { return .failed }
-        let hillUnit = store?.settings.hillSlots.contains(slot) ?? false
 
         await WindowManager.focusRoblox()
         // 1) Reference shot with nothing held (cursor parked far from the target).
@@ -2405,18 +2548,9 @@ final class MacroEngine: ObservableObject {
         let counterBefore = parked.flatMap { Self.readSlotCounter($0, slot: slot) }
         if let c = counterBefore, c.placed >= c.limit { await input.key("q"); return .limitReached }
 
-        // 3) Is the target itself red in the overlay (someone's unit / the lane)? Skip without clicking.
-        if let base, let parked, let ov = AutoPlanner(bases: [base], helds: [parked]) {
-            let c = ov.overlayCounts(at: target)
-            let blocked = hillUnit ? (c.green < 3 && c.red >= 4) : c.red >= 5
-            if blocked {
-                say(String(format: "Slot %d: spot (%.3f, %.3f) is red in the overlay (taken / lane) — skipping", slot, target.x, target.y))
-                lastFailWasBlock = true
-                await input.key("q")
-                try? await Task.sleep(nanoseconds: lag(150_000_000))
-                return .failed
-            }
-        }
+        // 3) (Removed: the "red in the overlay" pre-check. It skipped almost every spot — the held
+        //    unit's own range circle tints the map red wherever the cursor rests — and a wrong
+        //    click costs ~1 s and the game says so. Hover circle + click + checks decide instead.)
 
         // 4) Hover: the range circle turns BLUE on a valid spot, RED on an invalid one.
         var circleWasBlue = false
@@ -2433,9 +2567,12 @@ final class MacroEngine: ObservableObject {
         }
         if let parked, let hovering {
             switch Self.rangeCircleVerdict(parked: parked, hovering: hovering, at: target) {
+            case .invalid where forceTry:
+                say(String(format: "Slot %d: range circle looks red at (%.3f, %.3f) — clicking anyway (one of the best guesses)", slot, target.x, target.y))
             case .invalid:
                 say(String(format: "Slot %d: range circle is RED at (%.3f, %.3f) — not placing there", slot, target.x, target.y))
                 lastFailWasBlock = true
+                lastFailWasCircle = true
                 await input.key("q")
                 try? await Task.sleep(nanoseconds: lag(200_000_000))
                 return .failed
@@ -2465,6 +2602,12 @@ final class MacroEngine: ObservableObject {
             afterClick = try? await ScreenCapture.captureRoblox()
             guard let img = afterClick else { continue }
             if Self.unitPanelOpen(img) || Self.placementLimitMessage(img) || Self.notEnoughYenMessage(img) { break }
+            if Self.placeFailedMessage(img) {
+                say(String(format: "Slot %d: game says it can't go at (%.3f, %.3f) — remembering it", slot, target.x, target.y))
+                await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
+                lastFailWasClick = true
+                return .failed
+            }
             // Still holding the unit (no panel)? Make sure we still are before clicking again.
             if clickTry < clicks {
                 await input.key(String(slot))      // re-select in case the click dropped it
@@ -2526,6 +2669,7 @@ final class MacroEngine: ObservableObject {
                 say("Placed slot \(slot) ✓ (\(cb.placed)/\(cb.limit) → \(ca.placed)/\(ca.limit))")
                 return .placed
             }
+            say(String(format: "Slot %d: (%.3f, %.3f) didn't place — remembering it", slot, target.x, target.y))
             lastFailWasClick = true
             return .failed
         }
@@ -2537,11 +2681,26 @@ final class MacroEngine: ObservableObject {
             }
         }
         _ = base
+        say(String(format: "Slot %d: (%.3f, %.3f) didn't place — remembering it", slot, target.x, target.y))
         lastFailWasClick = true
         return .failed
     }
 
     /// "Not enough yen" type messages.
+    /// The game's message when a spot is invalid ("Cannot place here", "Invalid placement",
+    /// "Too close to…", "Must be placed on…"). Wording guessed broadly; the limit / yen messages
+    /// are checked separately first.
+    static func placeFailedMessage(_ img: CGImage) -> Bool {
+        guard let lines = try? OCR.read(img, region: CGRect(x: 0.05, y: 0.40, width: 0.85, height: 0.45), fast: true) else { return false }
+        return lines.contains { l in
+            let t = OCR.norm(l.text)
+            guard !t.contains("cannotplacemore"), !t.contains("placemorethan") else { return false }
+            return t.contains("cannotplace") || t.contains("cantplace") || t.contains("invalidplacement")
+                || t.contains("invalidposition") || t.contains("toocloseto") || t.contains("mustbeplaced")
+                || t.contains("cannotbeplaced") || t.contains("unabletoplace") || t.contains("placementinvalid")
+        }
+    }
+
     static func notEnoughYenMessage(_ img: CGImage) -> Bool {
         guard let lines = try? OCR.read(img, region: CGRect(x: 0.05, y: 0.40, width: 0.85, height: 0.45), fast: true) else { return false }
         return lines.contains { l in

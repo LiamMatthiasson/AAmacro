@@ -38,6 +38,11 @@ final class Store: ObservableObject {
     }
 
     /// The scan whose map name appears in the stage title (longest name wins).
+    func deleteProfile(_ name: String) {
+        try? FileManager.default.removeItem(at: profilesDir.appendingPathComponent("\(name).json"))
+        profiles.removeAll { $0.name == name }
+    }
+
     func profile(forTitle title: String) -> MapProfile? {
         let t = OCR.norm(title)
         if let exact = profiles.filter({ !OCR.norm($0.name).isEmpty && t.contains(OCR.norm($0.name)) })
@@ -56,7 +61,8 @@ final class Store: ObservableObject {
         if let inside = profiles.filter({ let k = OCR.norm($0.name); return k.count >= 5 && n.contains(k) })
             .max(by: { OCR.norm($0.name).count < OCR.norm($1.name).count }) { return inside.name }
         let best = profiles.map { ($0.name, Self.editDistance(n, OCR.norm($0.name))) }.min { $0.1 < $1.1 }
-        if let best, best.1 <= (n.count >= 9 ? 2 : 1) { return best.0 }
+        // Allowed typos: 1 for short names, 2 from 6 letters ("navwba" → "navybay"), 3 from 12.
+        if let best, best.1 <= (n.count >= 12 ? 3 : n.count >= 6 ? 2 : 1) { return best.0 }
         return name
     }
 

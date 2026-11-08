@@ -81,6 +81,8 @@ struct MapProfile: Codable, Identifiable {
     var referenceImage: String? = nil
     /// Teach mode: where you placed each slot yourself, in the order you placed them.
     var taught: [TaughtSpot]? = nil
+    /// Learned automatically: where each copy of each slot last went down successfully.
+    var learned: [TaughtSpot]? = nil
     /// Results on this map (to spot maps that need their own [Map] steps).
     var wins: Int? = nil
     var losses: Int? = nil

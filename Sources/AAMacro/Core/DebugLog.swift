@@ -26,6 +26,37 @@ enum DebugLog {
         }
     }
 
+    /// Keeps the logs folder from growing forever: a new macro.log each day (old ones kept as
+    /// macro-YYYY-MM-DD.log for a week) and pictures/snapshots deleted after 3 days.
+    static func cleanup() {
+        let fm = FileManager.default
+        let cal = Calendar.current
+        if let attrs = try? fm.attributesOfItem(atPath: logFile.path),
+           let made = (attrs[.creationDate] as? Date) ?? (attrs[.modificationDate] as? Date),
+           !cal.isDateInToday(made) {
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+            let dest = dir.appendingPathComponent("macro-\(f.string(from: made)).log")
+            if fm.fileExists(atPath: dest.path) {
+                // Same day already rotated: append to it.
+                if let data = try? Data(contentsOf: logFile), let h = try? FileHandle(forWritingTo: dest) {
+                    h.seekToEndOfFile(); h.write(data); try? h.close()
+                    try? fm.removeItem(at: logFile)
+                }
+            } else {
+                try? fm.moveItem(at: logFile, to: dest)
+            }
+        }
+        let now = Date()
+        for url in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            guard let mod = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { continue }
+            let days = now.timeIntervalSince(mod) / 86_400
+            let ext = url.pathExtension.lowercased()
+            let name = url.lastPathComponent
+            if (ext == "png" || ext == "txt") && days > 3 { try? fm.removeItem(at: url) }
+            if ext == "log" && name.hasPrefix("macro-") && days > 7 { try? fm.removeItem(at: url) }
+        }
+    }
+
     static func stamp() -> String {
         let f = DateFormatter(); f.dateFormat = "HHmmss"; return f.string(from: Date())
     }
