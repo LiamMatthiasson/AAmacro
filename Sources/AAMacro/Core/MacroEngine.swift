@@ -22,6 +22,19 @@ final class MacroEngine: ObservableObject {
     @Published var currentMap = ""
     @Published var wins = 0
     @Published var losses = 0
+    /// Summer Pearls earned this session (sum of the results panel's "+N") and secrets seen.
+    @Published var sessionPearls = 0
+    @Published var sessionSecrets = 0
+    /// When the last match ended (for the "no match finished in 45 min" Discord ping).
+    private var lastMatchEnded = Date()
+    private var lastStuckPing = Date.distantPast
+    private var secretFoundThisMatch = false
+
+    private func notify(_ text: String, image: CGImage? = nil) {
+        let hook = store?.settings.discordWebhook ?? ""
+        guard !hook.isEmpty else { return }
+        Discord.send(text, image: image, webhook: hook)
+    }
     @Published var startedAt: Date?
     weak var store: Store?
 
@@ -108,6 +121,9 @@ final class MacroEngine: ObservableObject {
 
     /// Map name read off the summer event board before joining (e.g. "magic town").
     private var boardHint = ""
+    /// The map name read off the matchmaking popup (big, clean text) — a second opinion for the
+    /// stage title, which is often misread.
+    private var popupMapHint = ""
     /// Placement cost per hotbar slot, read from the hotbar once per stage.
     private var slotCosts: [Int: Int] = [:]
     /// Set after voting on a weather card so the same vote screen isn't handled twice.
@@ -171,7 +187,7 @@ final class MacroEngine: ObservableObject {
         guard task == nil else { return }
         runsCompleted = 0
         inStage = false; recoverAttempts = 0
-        Self.knownLimits = [:]          // team may have changed since the last start
+        Self.knownLimits = [:]; Self.limitVotes = [:]     // team may have changed since the last start
         DebugLog.cleanup()
         // Preflight: say exactly what's missing instead of silently doing nothing.
         var problems: [String] = []
@@ -188,6 +204,7 @@ final class MacroEngine: ObservableObject {
         stayAwake(true)
         startCardWatcher()
         startedAt = Date(); wins = 0; losses = 0; lossStreak = 0; runDeadline = nil
+        sessionPearls = 0; sessionSecrets = 0; lastMatchEnded = Date(); lastStuckPing = .distantPast
         if let problem = WindowManager.lockAndFocus() { say("⚠️ \(problem)") }
         task = Task { await runLoop() }
     }
@@ -215,6 +232,11 @@ final class MacroEngine: ObservableObject {
     }
 
     func stop() {
+        if let st = startedAt, wins + losses > 0 {
+            let h = max(Date().timeIntervalSince(st) / 3600, 0.01)
+            notify("⏹ AA Macro stopped — \(wins)W / \(losses)L, \(sessionPearls) Summer Pearls (\(Int(Double(sessionPearls) / h))/h)"
+                   + (sessionSecrets > 0 ? ", ✦ \(sessionSecrets) secret(s)" : "") + String(format: " in %.1f h", h))
+        }
         stayAwake(false)
         stopCardWatcher()
         task?.cancel(); task = nil
@@ -411,6 +433,7 @@ final class MacroEngine: ObservableObject {
     private func doMatchmaking() async throws {
         let s = store?.settings ?? MacroSettings()
         say("Matchmaking: Find Match")
+        popupMapHint = ""
         let find: NormPoint
         do {
             find = try await poll(timeout: 20, what: "Find Match button") { img in
@@ -441,6 +464,9 @@ final class MacroEngine: ObservableObject {
             let start = Date()
             let (code, codeLine, submit) = try await poll(timeout: 25, what: "matchmaking code") { img -> (String, OCR.Line, OCR.Line)? in
                 let lines = try OCR.read(img, region: Region.centerPopup)
+                if self.popupMapHint.isEmpty {
+                    for l in lines { if let k = Store.knownMap(l.text) { self.popupMapHint = k; break } }
+                }
                 if !snapped, Date().timeIntervalSince(start) > 8 {
                     snapped = true
                     self.say("Still no code after 8s — the popup reads: " + lines.prefix(10).map(\.text).joined(separator: " | "))
@@ -666,6 +692,12 @@ final class MacroEngine: ObservableObject {
         say("Waiting for the match to end")
         _ = try await poll(timeout: 3600, what: "end of match") { [self] img in endScreen(in: img) }
         say(lastResultWasVictory ? "Result: VICTORY" : "Result: no victory seen (counting as a loss)")
+        writeMatchReport(won: lastResultWasVictory)
+        lastMatchEnded = Date(); secretFoundThisMatch = false
+        if let img = try? await ScreenCapture.captureRoblox(), let p = Self.pearlsEarned(img) {
+            sessionPearls += p
+            say("Summer Pearls this match: +\(p) — session total \(sessionPearls)")
+        }
         // Per-map record + how far it got, so weak maps stand out (give them their own [Map] steps).
         if let img = try? await ScreenCapture.captureRoblox(), let lines = try? OCR.read(img, fast: true) {
             let wave = lines.first { OCR.norm($0.text).contains("wavescompleted") }
@@ -705,12 +737,14 @@ final class MacroEngine: ObservableObject {
                 // Reward / item-drop screens come up now, BEFORE "Return to lobby": click through them.
                 for r in 0..<4 {
                     guard let rimg = try? await ScreenCapture.captureRoblox() else { break }
+                    checkForSecret(rimg)
                     if case .lobbyButton? = endScreen(in: rimg), r > 0 { break }     // rewards done
                     if !(await clearPopups(rimg)) { await input.click(NormPoint(x: 0.5, y: 0.6)) }
                     say("Clicking through rewards…")
                     try? await Task.sleep(nanoseconds: lag(1_200_000_000))
                 }
             case .result(nil)?, .drops?, nil:
+                checkForSecret(img)
                 // Item drop / reward screens: use a dismiss button if there is one,
                 // otherwise click the middle of the screen to skip the animation.
                 if !(await clearPopups(img)) {
@@ -828,6 +862,63 @@ final class MacroEngine: ObservableObject {
     }
 
     @Published var scanning = false
+
+    // MARK: Dungeon watch (button) — collects labelled screenshots of every dungeon screen while
+    // YOU play a dungeon, so the Dungeon mode can be built from the real screens.
+    @Published var dungeonWatching = false
+    private var dungeonWatchTask: Task<Void, Never>?
+
+    func toggleDungeonWatch() {
+        if dungeonWatching {
+            dungeonWatchTask?.cancel(); dungeonWatchTask = nil; dungeonWatching = false
+            say("🗺️ Dungeon watch stopped — screenshots are in logs/dungeon")
+            return
+        }
+        dungeonWatching = true
+        let folder = DebugLog.dir.appendingPathComponent("dungeon")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        say("🗺️ Dungeon watch on — play a dungeon normally; every dungeon screen is saved to logs/dungeon")
+        dungeonWatchTask = Task { [weak self] in
+            var lastKind = ""
+            var lastSaved = Date.distantPast
+            var count = 0
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let img = try? await ScreenCapture.captureRoblox(), let lines = try? OCR.read(img, fast: true) {
+                    let t = lines.map { OCR.norm($0.text) }
+                    func has(_ w: String...) -> Bool { t.contains { line in w.contains { line.contains($0) } } }
+                    let kind: String
+                    if has("dungeondepth") { kind = "path" }
+                    else if has("continuedungeon", "returntodungeon") { kind = "after-match" }
+                    else if has("treasurechest", "rarechest") && has("open") { kind = "chests" }
+                    else if has("relic") { kind = "relic" }
+                    else if has("buy", "purchase") && (has("shop") || has("hoard")) { kind = "shop" }
+                    else if has("blessing", "curse") { kind = "curse-blessing" }
+                    else if has("victory") || has("defeat") || has("wavescompleted") { kind = "result" }
+                    else if has("retry", "livesleft", "attempts", "tries") { kind = "retry" }
+                    else if has("dungeon") && has("key", "start", "enter") { kind = "dungeon-start" }
+                    else { kind = "" }
+                    // Save when the screen changes, and every 12 s while on a dungeon screen.
+                    if !kind.isEmpty, kind != lastKind || Date().timeIntervalSince(lastSaved) > 12 {
+                        count += 1
+                        let name = "\(DebugLog.stamp())-\(kind)"
+                        DebugLog.savePNG(img, name: "dungeon/\(name).png")
+                        var report = "=== \(kind) @ \(name) (\(img.width)×\(img.height)) ===\n"
+                        let full = (try? OCR.read(img)) ?? lines
+                        for l in full.sorted(by: { ($0.box.minY, $0.box.minX) < ($1.box.minY, $1.box.minX) }) {
+                            report += String(format: "  (%.3f, %.3f) w%.3f h%.3f  %@\n", l.box.midX, l.box.midY, l.box.width, l.box.height, l.text)
+                        }
+                        try? report.write(to: folder.appendingPathComponent("\(name).txt"), atomically: true, encoding: .utf8)
+                        if kind != lastKind { self.say("🗺️ Dungeon watch: saved \(kind) screen (#\(count))") }
+                        lastKind = kind; lastSaved = Date()
+                    } else if kind.isEmpty {
+                        lastKind = ""
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
 
     // MARK: Teach now (button) — teach any time, without turning on Teach mode or restarting
     @Published var teachNowActive = false
@@ -1395,6 +1486,32 @@ final class MacroEngine: ObservableObject {
 
     /// The unit panel that pops up right after a placement. Unsellable units (e.g. slot 6) have
     /// no Sell button, so look for any of the panel's own words.
+    /// Everything worth knowing right after a placement click, from ONE text read (it used to be
+    /// five separate reads, ~1 s per failed try).
+    struct AfterClick { var panel = false, limit = false, noYen = false, failed = false }
+    static func readAfterClick(_ img: CGImage) -> AfterClick {
+        var r = AfterClick()
+        guard let lines = try? OCR.read(img, region: CGRect(x: 0, y: 0.28, width: 0.92, height: 0.64)) else { return r }
+        let panelWords = ["upgrade", "upg", "targeting", "target", "first", "strongest", "weakest", "last",
+                          "damage", "range", "spa", "totaldamage"]
+        var hits = 0
+        for l in lines {
+            let t = OCR.norm(l.text)
+            if l.box.midX < 0.48 {
+                if t.hasPrefix("sell") { r.panel = true }
+                if panelWords.contains(where: { t.hasPrefix($0) }) { hits += 1 }
+            }
+            if t.contains("cannotplacemore") || t.contains("placemorethan") || t.contains("uniqueunits")
+                || t.contains("maynotbeplaced") || t.contains("othersofitskind") { r.limit = true }
+            else if t.contains("cannotplace") || t.contains("cantplace") || t.contains("invalidplacement")
+                || t.contains("invalidposition") || t.contains("toocloseto") || t.contains("mustbeplaced")
+                || t.contains("cannotbeplaced") || t.contains("unabletoplace") || t.contains("placementinvalid") { r.failed = true }
+            if t.contains("notenough") || t.contains("cannotafford") || t.contains("insufficient") || t.contains("needmore") { r.noYen = true }
+        }
+        if hits >= 2 { r.panel = true }
+        return r
+    }
+
     static func unitPanelOpen(_ img: CGImage) -> Bool {
         if sellButton(img) != nil { return true }
         guard let lines = try? OCR.read(img, region: CGRect(x: 0, y: 0.30, width: 0.48, height: 0.62)) else { return false }
@@ -1682,7 +1799,49 @@ final class MacroEngine: ObservableObject {
         if n0.isEmpty || !Self.plausibleTitle(currentTitle, name: n0, known: store?.profiles.map(\.name) ?? []) {
             currentTitle = await waitForTitle()
         }
+        // Map name: the title read several times (majority) and the matchmaking popup must agree on
+        // a real map. Popup wins a tie — its text is big and clean.
+        do {
+            var votes: [String: Int] = [:]
+            if let k = Store.knownMap(Self.mapName(fromTitle: currentTitle)) { votes[k, default: 0] += 1 }
+            for _ in 0..<3 {
+                try? await Task.sleep(nanoseconds: lag(500_000_000))
+                guard let img = try? await ScreenCapture.captureRoblox() else { continue }
+                let t = (try? OCR.read(img, region: Region.stageTitle).map(\.text).joined(separator: " ")) ?? ""
+                if let k = Store.knownMap(Self.mapName(fromTitle: t)) { votes[k, default: 0] += 1 }
+            }
+            if !popupMapHint.isEmpty { votes[popupMapHint, default: 0] += 2 }
+            if let best = votes.max(by: { $0.value < $1.value })?.key {
+                if best != Store.knownMap(Self.mapName(fromTitle: currentTitle)) {
+                    say("Map name: using \(best) (title read \"\(currentTitle)\", popup said \"\(popupMapHint)\")")
+                }
+                currentTitle = best + " Summer Hunt"
+            } else if !popupMapHint.isEmpty {
+                currentTitle = popupMapHint + " Summer Hunt"
+            }
+            say("Map: \(Self.mapName(fromTitle: currentTitle))" + (popupMapHint.isEmpty ? "" : " (popup: \(popupMapHint))"))
+        }
         currentMap = (Self.mapName(fromTitle: currentTitle).isEmpty ? "unknown" : Self.mapName(fromTitle: currentTitle)) + " · auto"
+        // The title already shows on the loading screen ("… 68250/68250 Loading…", whose tips can
+        // even look like game messages). Wait until the stage is really running: wave counter up,
+        // no "Loading" text.
+        do {
+            let end = Date().addingTimeInterval(45)
+            var said = false
+            while Date() < end, !Task.isCancelled {
+                if let img = try? await ScreenCapture.captureRoblox() {
+                    let loading = ((try? OCR.read(img, fast: true)) ?? []).contains { OCR.norm($0.text).contains("loading") }
+                    if !loading, Self.readWave(img) != nil { break }
+                }
+                if !said { say("Waiting for the stage to finish loading…"); said = true }
+                try? await Task.sleep(nanoseconds: lag(1_000_000_000))
+            }
+        }
+        matchTries = []; matchPlanned = [:]; matchPlaceTime = [:]
+        matchStartImage = try? await ScreenCapture.captureRoblox()
+        if let img = matchStartImage {
+            DebugLog.savePNG(img, name: "\(DebugLog.stamp())-start-\(Self.mapName(fromTitle: currentTitle)).png")
+        }
         autoPlaced = []; autoCovered = [:]; autoFull = []; autoMaxed = []
         blockedGround = []; blockedHill = []
 
@@ -1742,13 +1901,14 @@ final class MacroEngine: ObservableObject {
             guard let p = activeProfile else { return true }
             return p.ground.count + p.hill.count < 15 || p.referenceImage == nil
         }
-        for step in steps {
+        for (stepIndex, step) in steps.enumerated() {
             try Task.checkCancellation()
             if try await checkResults() { return }
             try await handleCards()
             say("Step: \(step)")
             switch step {
             case let .place(slot, count):
+                matchPlanned[slot, default: 0] += count
                 for _ in 0..<count {
                     if autoFull.contains(slot) { break }
                     if !(try await placeSlot(slot)) {
@@ -1777,6 +1937,10 @@ final class MacroEngine: ObservableObject {
                 }
             case let .wait(t):
                 try await sleepWatchingCards(t)
+            case .scan where steps[(stepIndex + 1)...].contains(where: { if case .place = $0 { return true }; return false }):
+                // A scan test-places for minutes (8 min on Strange Town) while the rest of the team
+                // waits — that lost the match. It now runs after the last placement instead.
+                say("Scan step: placing the rest of the team first — scanning after that if needed")
             case .scan:
                 if s.learnWhilePlaying && mapIsWeak() && !learnedThisMatch {
                     learnedThisMatch = true
@@ -1877,11 +2041,24 @@ final class MacroEngine: ObservableObject {
     /// Every real attempt teaches the map (good spots saved, clicked-and-failed spots remembered).
     /// Returns false if the slot is full or nothing worked in time (it gets retried later).
     private func placeSlot(_ slot: Int) async throws -> Bool {
+        let started = Date()
+        defer { matchPlaceTime[slot, default: 0] += Date().timeIntervalSince(started) }
         let s = store?.settings ?? MacroSettings()
         let range = s.autoRangePerSlot[slot] ?? 0.12
         var tried: [NormPoint] = []
         var plannerUsed: AutoPlanner?
-        let deadline = Date().addingTimeInterval(240)
+        let knowsSlot = !((activeProfile?.taught ?? []) + (activeProfile?.learned ?? [])).filter { $0.slot == slot }.isEmpty
+        let isHillSlot = s.hillSlots.contains(slot)
+        let hillPlacedAlready = autoPlaced.contains { $0.slot != 0 && s.hillSlots.contains($0.slot) }
+        let firstSearch = isHillSlot && !knowsSlot && !hillPlacedAlready
+        let noHillsHere = isHillSlot && (activeProfile?.noHills ?? false) && !knowsSlot && !hillPlacedAlready
+        if noHillsHere {
+            say("Slot \(slot): this map had no reachable hills last time — skipping the hill search")
+            return false
+        }
+        // A hill unit on a map it doesn't know yet can take minutes to find a hill. Don't hold the
+        // rest of the team hostage: give it 90 s, carry on with the steps, keep retrying later.
+        let deadline = Date().addingTimeInterval(firstSearch ? 90 : 240)
         var round = 0
         var widened = false
         var gridMode = false
@@ -1895,6 +2072,7 @@ final class MacroEngine: ObservableObject {
                 _ = try await poll(timeout: 900, what: "\(price)¥ for slot \(slot)") { img -> Bool? in self.enoughYen(img, price) }
             }
             if let p = try await teachPlace(slot) {
+                matchTries.append((slot, p, true))
                 autoPlaced.append((slot, p))
                 return true
             }
@@ -1917,6 +2095,7 @@ final class MacroEngine: ObservableObject {
             let ownTaught = (activeProfile?.taught ?? []).filter { $0.slot == slot }
             let freshTaught = (ownTaught.isEmpty ? (activeProfile?.learned ?? []).filter { $0.slot == slot } : ownTaught).map(\.at)
                 .dropFirst(copyNo).contains { t in !near(tried, t, 0.02) && !near(blockedGround + blockedHill, t, 0.012) }
+            slotIsFull = false        // (was left over from the previous slot when readOverlay was skipped)
             let planner = (round == 1 && freshTaught) ? nil : await readOverlay(slot: slot)
             if slotIsFull { autoFull.insert(slot); say("Slot \(slot) is at its placement limit"); return false }
             plannerUsed = planner ?? plannerUsed
@@ -1973,7 +2152,10 @@ final class MacroEngine: ObservableObject {
             // Hill units: only spots that are actually green in the overlay (when it shows green).
             if hill, let planner, planner.greenCellCount >= 40 {
                 if !gridMode {
-                    picks = picks.filter { p in taughtAll.contains(where: { $0.x == p.x && $0.y == p.y }) || planner.overlayCounts(at: p).green >= 4 }
+                    // (Never filter out spots right beside our own hill units — those are proven.)
+                    let ownHill = autoPlaced.filter { $0.slot != 0 && s.hillSlots.contains($0.slot) }.map(\.at)
+                    picks = picks.filter { p in taughtAll.contains(where: { $0.x == p.x && $0.y == p.y })
+                        || near(ownHill, p, 0.07) || planner.overlayCounts(at: p).green >= 4 }
                 }
             }
             var unique: [NormPoint] = []
@@ -2076,6 +2258,7 @@ final class MacroEngine: ObservableObject {
                 tried.append(target)
                 switch result {
                 case .placed:
+                    matchTries.append((slot, target, true))
                     learnSpot(target, hill: hill, good: true)
                     saveLearned(slot: slot, copy: autoPlaced.filter { $0.slot == slot }.count, at: target)
                     autoPlaced.append((slot, target))
@@ -2089,6 +2272,7 @@ final class MacroEngine: ObservableObject {
                     needMoney = true
                 case .failed:
                     let wasTaught = taughtAll.contains { abs($0.x - target.x) < 0.001 && abs($0.y - target.y) < 0.001 }
+                    if lastFailWasClick || lastFailWasCircle { matchTries.append((slot, target, false)) }
                     // Clicked and nothing placed, or the range circle turned red: remember it for
                     // future matches (suspect after once, never tried again after twice).
                     if (lastFailWasClick || lastFailWasCircle) && !wasTaught { learnSpot(target, hill: hill, good: false) }
@@ -2103,7 +2287,7 @@ final class MacroEngine: ObservableObject {
             }
             if needMoney { try await sleepWatchingCards(3) }
         }
-        say("⚠️ Couldn't place slot \(slot) in 4 minutes — will retry it later")
+        say("⚠️ Couldn't place slot \(slot) in \(firstSearch ? "90 s (new map, hill search)" : "4 minutes") — carrying on, will retry it later")
         return false
     }
 
@@ -2149,6 +2333,71 @@ final class MacroEngine: ObservableObject {
         return nil
     }
 
+    // MARK: Match debug record (summary in the log + a placements picture in logs/)
+    private var matchTries: [(slot: Int, at: NormPoint, ok: Bool)] = []
+    private var matchPlanned: [Int: Int] = [:]
+    private var matchPlaceTime: [Int: Double] = [:]
+    private var matchStartImage: CGImage?
+
+    /// Log lines + picture describing how placement went this match.
+    private func writeMatchReport(won: Bool) {
+        guard !matchTries.isEmpty || !matchPlanned.isEmpty else { return }
+        let slots = Set(matchPlanned.keys).union(matchTries.map(\.slot)).sorted()
+        var parts: [String] = []
+        for sl in slots {
+            let ok = autoPlaced.filter { $0.slot == sl }.count
+            let miss = matchTries.filter { $0.slot == sl && !$0.ok }.count
+            let t = Int(matchPlaceTime[sl] ?? 0)
+            parts.append("slot \(sl) \(ok)/\(matchPlanned[sl] ?? ok)" + (miss > 0 ? " (\(miss) misses)" : "") + " \(t)s")
+        }
+        let hillSlots = Set(store?.settings.hillSlots ?? [])
+        let hillPlanned = slots.contains { hillSlots.contains($0) }
+        let hillPlaced = autoPlaced.contains { $0.slot != 0 && hillSlots.contains($0.slot) }
+        let hillMisses = matchTries.filter { hillSlots.contains($0.slot) && !$0.ok }.count
+        let mapNameNow = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? ""
+        if hillPlanned, !mapNameNow.isEmpty, var prof = store?.profiles.first(where: { $0.name == mapNameNow }) {
+            if !hillPlaced && hillMisses >= 40 && prof.noHills != true {
+                prof.noHills = true; store?.saveProfile(prof)
+                say("\(mapNameNow): no hill spot found after \(hillMisses) tries — hill units will skip the search here next time")
+            } else if hillPlaced && prof.noHills == true {
+                prof.noHills = nil; store?.saveProfile(prof)
+            }
+        }
+        let totalMiss = matchTries.filter { !$0.ok }.count
+        let totalTime = Int(matchPlaceTime.values.reduce(0, +))
+        say("Match summary (\(won ? "won" : "lost")): " + parts.joined(separator: " · ")
+            + " — \(totalMiss) misses, \(totalTime / 60)m\(totalTime % 60)s spent placing")
+        // Picture: the map at the start of the match, ● = placed (colour per slot), ✕ = missed.
+        guard let base = matchStartImage else { return }
+        let W = base.width, H = base.height
+        guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        ctx.draw(base, in: CGRect(x: 0, y: 0, width: W, height: H))
+        let colors: [Int: CGColor] = [1: CGColor(red: 1, green: 0.2, blue: 0.2, alpha: 1), 2: CGColor(red: 1, green: 0.6, blue: 0, alpha: 1),
+                                      3: CGColor(red: 1, green: 1, blue: 0, alpha: 1), 4: CGColor(red: 0.2, green: 1, blue: 0.3, alpha: 1),
+                                      5: CGColor(red: 0.2, green: 0.6, blue: 1, alpha: 1), 6: CGColor(red: 0.8, green: 0.3, blue: 1, alpha: 1)]
+        for t in matchTries {
+            let x = t.at.x * Double(W), y = Double(H) - t.at.y * Double(H)
+            let c = colors[t.slot] ?? CGColor(gray: 1, alpha: 1)
+            if t.ok {
+                ctx.setFillColor(c); ctx.fillEllipse(in: CGRect(x: x - 14, y: y - 14, width: 28, height: 28))
+                ctx.setStrokeColor(CGColor(gray: 0, alpha: 1)); ctx.setLineWidth(3)
+                ctx.strokeEllipse(in: CGRect(x: x - 14, y: y - 14, width: 28, height: 28))
+            } else {
+                ctx.setStrokeColor(c); ctx.setLineWidth(5)
+                ctx.move(to: CGPoint(x: x - 10, y: y - 10)); ctx.addLine(to: CGPoint(x: x + 10, y: y + 10))
+                ctx.move(to: CGPoint(x: x - 10, y: y + 10)); ctx.addLine(to: CGPoint(x: x + 10, y: y - 10))
+                ctx.strokePath()
+            }
+        }
+        if let out = ctx.makeImage() {
+            let name = "\(DebugLog.stamp())-placements-\(Self.mapName(fromTitle: currentTitle)).png"
+            DebugLog.savePNG(out, name: name)
+            say("Placement picture saved: logs/\(name)  (● placed, ✕ missed — slot colours: 1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple)")
+        }
+    }
+
     /// Remembers where the n-th copy of a slot actually went down (automatic layout learning).
     private func saveLearned(slot: Int, copy: Int, at p: NormPoint) {
         let name = activeProfile?.name ?? store?.canonicalName(Self.mapName(fromTitle: currentTitle)) ?? Self.mapName(fromTitle: currentTitle)
@@ -2185,11 +2434,23 @@ final class MacroEngine: ObservableObject {
 
     /// Every ~3.5 % over the playable map (not the HUD) — the last resort for ground units.
     private func denseGrid() -> [NormPoint] {
+        // The whole map, minus only the CLICKABLE interface (buttons, hotbar, title). It used to stop
+        // at the level-info column and the top band — on Snowy Town the hills are up there, so two
+        // full sweeps (~95 misses each) found nothing.
+        let buttons: [CGRect] = [
+            CGRect(x: 0.00, y: 0.00, width: 0.20, height: 0.16),   // Roblox / menu / chat buttons
+            CGRect(x: 0.80, y: 0.00, width: 0.20, height: 0.16),   // P · i · FX · heart
+            CGRect(x: 0.25, y: 0.00, width: 0.50, height: 0.17),   // stage title + boss bar
+            CGRect(x: 0.93, y: 0.45, width: 0.07, height: 0.15),   // F (unit list) button
+            CGRect(x: 0.29, y: 0.82, width: 0.44, height: 0.18),   // yen + hotbar
+            CGRect(x: 0.00, y: 0.84, width: 0.18, height: 0.16),   // charm + settings gear
+            CGRect(x: 0.84, y: 0.80, width: 0.16, height: 0.20),   // minimap corner
+        ]
         var out: [NormPoint] = []
-        for y in stride(from: 0.23, through: 0.84, by: 0.035) {
-            for x in stride(from: 0.04, through: 0.78, by: 0.03) {
+        for y in stride(from: 0.12, through: 0.86, by: 0.035) {
+            for x in stride(from: 0.03, through: 0.96, by: 0.03) {
                 let p = NormPoint(x: x, y: y)
-                if !AutoPlanner.hud.contains(where: { $0.contains(CGPoint(x: p.x, y: p.y)) }) { out.append(p) }
+                if !buttons.contains(where: { $0.contains(CGPoint(x: p.x, y: p.y)) }) { out.append(p) }
             }
         }
         return out
@@ -2287,12 +2548,27 @@ final class MacroEngine: ObservableObject {
         // and combine — each part of the map is circle-free in at least one of the two.
         input.move(Self.parkA)
         try? await Task.sleep(nanoseconds: lag(250_000_000))
-        guard let base1 = try? await ScreenCapture.captureRoblox() else { return nil }
+        guard var base1 = try? await ScreenCapture.captureRoblox() else { return nil }
+        // A unit panel left open by the last placement covers the left of the map: close it first.
+        for _ in 0..<2 where Self.readAfterClick(base1).panel {
+            await input.click(Region.unitPanelClose)
+            try? await Task.sleep(nanoseconds: lag(350_000_000))
+            input.move(Self.parkA)
+            if let b = try? await ScreenCapture.captureRoblox() { base1 = b }
+        }
+        // A "Cannot place more…" message from the PREVIOUS unit stays on screen for a moment —
+        // it once made slots 5 and 2 look full right after slot 4 hit its limit. Let it fade first.
+        for _ in 0..<4 where Self.placementLimitMessage(base1) {
+            try? await Task.sleep(nanoseconds: lag(900_000_000))
+            if let b = try? await ScreenCapture.captureRoblox() { base1 = b }
+        }
+        let lingering = Self.placementLimitMessage(base1)
         await input.key(String(slot))
         try? await Task.sleep(nanoseconds: lag(450_000_000))           // overlay fades in
         let held1 = try? await ScreenCapture.captureRoblox()
         slotIsFull = false
-        if let h = held1, Self.placementLimitMessage(h) {
+        if let h = held1, !lingering, Self.placementLimitMessage(h),
+           !(Self.readSlotCounter(h, slot: slot).map { $0.placed < $0.limit } ?? false) {
             slotIsFull = true
             await input.key("q")
             return nil
@@ -2485,12 +2761,16 @@ final class MacroEngine: ObservableObject {
     /// different limit ("10/10" for a 4-limit unit) is a misread and is ignored.
     static var knownLimits: [Int: Int] = [:]
 
+    static var limitVotes: [Int: [Int: Int]] = [:]
+
     static func readSlotCounter(_ img: CGImage, slot: Int) -> (placed: Int, limit: Int)? {
         guard let c = readSlotCounterRaw(img, slot: slot) else { return nil }
         if let known = knownLimits[slot] {
             return c.limit == known ? c : nil
         }
-        knownLimits[slot] = c.limit
+        // Not locked yet: count readings; lock once the same limit has been read twice.
+        limitVotes[slot, default: [:]][c.limit, default: 0] += 1
+        if (limitVotes[slot]?[c.limit] ?? 0) >= 2 { knownLimits[slot] = c.limit }
         return c
     }
 
@@ -2523,164 +2803,117 @@ final class MacroEngine: ObservableObject {
     /// Set when the match start already did teleport-to-spawn + camera, so it isn't done twice.
     private var didSpawnReset = false
 
-    /// trusted = one of your taught spots: skip the overlay "red" pre-check (it misfires near the
-    /// unit's own range circle); the hover circle and the after-click checks still apply.
+    /// ONE placement attempt, verified by the game itself. Every step re-checks the screen so
+    /// nothing is assumed:
+    ///   1. Clean start — close a unit panel left open by the last placement/upgrade (otherwise
+    ///      it looks like "the panel opened" = a fake success) and wait out leftover messages.
+    ///   2. Hold the unit → read the slot counter ("1/3") and any limit / money message.
+    ///   3. Hover the spot, click ONCE (no double clicks: a second click after a click that did
+    ///      land placed a second unit).
+    ///   4. Verify: press the slot key again and read the counter. Counter went up = placed.
+    ///      Only if the counter can't be read: a panel that is NEW since step 1, or a limit message
+    ///      that is NEW, counts. The game's "can't place" message = failed.
+    /// `trusted` / `forceTry` are kept for callers; the circle colour no longer blocks a click.
     private func placeOnce(slot: Int, at target: NormPoint, requireBlue: Bool = false, trusted: Bool = false,
                            forceTry: Bool = false) async -> PlaceResult {
         lastFailWasClick = false
         lastFailWasBlock = false
         lastFailWasCircle = false
         if Task.isCancelled { return .failed }
+        let interruptsAtStart = cardInterrupts
+        func interrupted() -> Bool { cardInterrupts != interruptsAtStart }
 
         await WindowManager.focusRoblox()
-        // 1) Reference shot with nothing held (cursor parked far from the target).
+
+        // 1) Clean start.
         input.move(Self.park(awayFrom: target))
-        try? await Task.sleep(nanoseconds: lag(150_000_000))
-        let base = try? await ScreenCapture.captureRoblox()
-        // 2) Hold the unit: the overlay shows where it can't go (lane, other players' units = red).
-        await input.key(String(slot))
-        try? await Task.sleep(nanoseconds: lag(350_000_000))
-        let parked = try? await ScreenCapture.captureRoblox()
-        if let p = parked {
-            if Self.placementLimitMessage(p) { await input.key("q"); return .limitReached }
-            if Self.notEnoughYenMessage(p) { await input.key("q"); return .cantAfford }
+        try? await Task.sleep(nanoseconds: lag(200_000_000))
+        guard var base = try? await ScreenCapture.captureRoblox() else { return .failed }
+        for _ in 0..<2 where Self.readAfterClick(base).panel {
+            await input.click(Region.unitPanelClose)                       // red X of the unit panel
+            try? await Task.sleep(nanoseconds: lag(350_000_000))
+            input.move(Self.park(awayFrom: target))
+            if let b = try? await ScreenCapture.captureRoblox() { base = b }
         }
-        let counterBefore = parked.flatMap { Self.readSlotCounter($0, slot: slot) }
+        for _ in 0..<4 where Self.placementLimitMessage(base) || Self.placeFailedMessage(base) {
+            try? await Task.sleep(nanoseconds: lag(800_000_000))           // old message still fading
+            if let b = try? await ScreenCapture.captureRoblox() { base = b }
+        }
+        let before = Self.readAfterClick(base)                             // what was on screen already
+
+        // 2) Hold the unit.
+        await input.key(String(slot))
+        try? await Task.sleep(nanoseconds: lag(400_000_000))
+        guard let held = try? await ScreenCapture.captureRoblox() else { await input.key("q"); return .failed }
+        let counterBefore = Self.readSlotCounter(held, slot: slot)
         if let c = counterBefore, c.placed >= c.limit { await input.key("q"); return .limitReached }
+        let heldRead = Self.readAfterClick(held)
+        if heldRead.limit && !before.limit && counterBefore == nil { await input.key("q"); return .limitReached }
+        if heldRead.noYen && !before.noYen { await input.key("q"); return .cantAfford }
+        if interrupted() { await input.key("q"); return .failed }
 
-        // 3) (Removed: the "red in the overlay" pre-check. It skipped almost every spot — the held
-        //    unit's own range circle tints the map red wherever the cursor rests — and a wrong
-        //    click costs ~1 s and the game says so. Hover circle + click + checks decide instead.)
-
-        // 4) Hover: the range circle turns BLUE on a valid spot, RED on an invalid one.
-        var circleWasBlue = false
+        // 3) Hover, then one click.
         input.move(target)
         try? await Task.sleep(nanoseconds: lag(300_000_000))
-        let hovering = try? await ScreenCapture.captureRoblox()
-        if let h = hovering, Self.cardScreenVote(h) != nil {
-            say("Cards appeared while placing — cancelling, picking a card, then retrying")
+        if cardsPending != nil || interrupted() {
             await input.key("q")
-            try? await Task.sleep(nanoseconds: lag(200_000_000))
-            cardVotedAt = .distantPast
-            try? await handleCards(h)
+            cardInterrupts += 1                                            // not the spot's fault
+            await yieldToCards()
             return .failed
         }
-        if let parked, let hovering {
-            switch Self.rangeCircleVerdict(parked: parked, hovering: hovering, at: target) {
-            case .invalid where forceTry:
-                say(String(format: "Slot %d: range circle looks red at (%.3f, %.3f) — clicking anyway (one of the best guesses)", slot, target.x, target.y))
-            case .invalid:
-                say(String(format: "Slot %d: range circle is RED at (%.3f, %.3f) — not placing there", slot, target.x, target.y))
-                lastFailWasBlock = true
-                lastFailWasCircle = true
-                await input.key("q")
-                try? await Task.sleep(nanoseconds: lag(200_000_000))
-                return .failed
-            case .valid:
-                circleWasBlue = true
-            case .unsure:
-                if requireBlue {
-                    await input.key("q")
-                    try? await Task.sleep(nanoseconds: lag(150_000_000))
-                    return .failed
-                }
-            }
-        }
-
-        // 5) Click — up to 3 times on the same spot (Roblox sometimes drops a click) — and read
-        //    what the game says after each.
-        var afterClick: CGImage?
-        let clicks = circleWasBlue ? 2 : 1          // a drop-click is only worth retrying on a confirmed-good spot
-        for clickTry in 1...clicks {
-            if clickTry > 1 {
-                say("Slot \(slot): placement didn't register — clicking the same spot again")
-                input.move(target)
-                try? await Task.sleep(nanoseconds: lag(200_000_000))
-            }
-            await input.click(target)
-            try? await Task.sleep(nanoseconds: lag(600_000_000))
-            afterClick = try? await ScreenCapture.captureRoblox()
-            guard let img = afterClick else { continue }
-            if Self.unitPanelOpen(img) || Self.placementLimitMessage(img) || Self.notEnoughYenMessage(img) { break }
-            if Self.placeFailedMessage(img) {
-                say(String(format: "Slot %d: game says it can't go at (%.3f, %.3f) — remembering it", slot, target.x, target.y))
-                await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
-                lastFailWasClick = true
-                return .failed
-            }
-            // Still holding the unit (no panel)? Make sure we still are before clicking again.
-            if clickTry < clicks {
-                await input.key(String(slot))      // re-select in case the click dropped it
-                try? await Task.sleep(nanoseconds: lag(250_000_000))
-                let re = try? await ScreenCapture.captureRoblox()
-                if let re, Self.placementLimitMessage(re) {
-                    // Holding was refused: the slot is now full → our click DID place it.
-                    await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
-                    say("Placed slot \(slot) ✓ (slot is now at its limit)")
-                    return .placed
-                }
-                if let c = re.flatMap({ Self.readSlotCounter($0, slot: slot) }) {
-                    if let cb = counterBefore, c.placed > cb.placed { break }      // it did go down after all
-                    if c.placed >= c.limit {
-                        await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
-                        say("Placed slot \(slot) ✓ (\(c.placed)/\(c.limit))")
-                        return .placed
-                    }
-                }
-            }
-        }
-        if let img = afterClick {
-            if Self.placementLimitMessage(img) {
-                // The slot wasn't full before this click (checked above), so the limit now means
-                // our unit went down.
-                say("Placed slot \(slot) ✓ (game now says it's at its limit)")
-                await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
-                return .placed
-            }
-            if Self.notEnoughYenMessage(img) {
-                say("Slot \(slot): game says not enough yen")
-                await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
-                return .cantAfford
-            }
-        }
-
-        // 6) Did it go down? The unit's panel pops up (with Sell) right after a placement.
-        if let img = afterClick, Self.unitPanelOpen(img) {
-            say("Placed slot \(slot) ✓ (unit panel opened)")
-            return .placed
-        }
-        // …or the slot counter went up (1/3 → 2/3). Exact — no yen reading needed.
-        await input.key(String(slot))
-        try? await Task.sleep(nanoseconds: lag(350_000_000))
-        let check = try? await ScreenCapture.captureRoblox()
-        await input.key("q")
-        try? await Task.sleep(nanoseconds: lag(150_000_000))
-        if let img = check, Self.placementLimitMessage(img) {
-            say("Placed slot \(slot) ✓ (slot is now at its limit)")
-            return .placed
-        }
-        if let img = check, let ca = Self.readSlotCounter(img, slot: slot), ca.placed >= ca.limit,
-           counterBefore.map({ $0.placed < $0.limit }) ?? true {
-            say("Placed slot \(slot) ✓ (\(ca.placed)/\(ca.limit))")
-            return .placed
-        }
-        if let cb = counterBefore, let img = check, let ca = Self.readSlotCounter(img, slot: slot) {
-            if ca.placed > cb.placed {
-                say("Placed slot \(slot) ✓ (\(cb.placed)/\(cb.limit) → \(ca.placed)/\(ca.limit))")
-                return .placed
-            }
-            say(String(format: "Slot %d: (%.3f, %.3f) didn't place — remembering it", slot, target.x, target.y))
+        await input.click(target)
+        try? await Task.sleep(nanoseconds: lag(650_000_000))
+        let after = (try? await ScreenCapture.captureRoblox()).map(Self.readAfterClick) ?? AfterClick()
+        if interrupted() { await input.key("q"); return .failed }
+        if after.failed && !before.failed {
+            say(String(format: "Slot %d: game says it can't go at (%.3f, %.3f) — remembering it", slot, target.x, target.y))
+            await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
             lastFailWasClick = true
             return .failed
         }
-        // Counter not readable: look once more (slower), compared with the count from before.
-        if let n = await placedCount(slot: slot) {
-            if n.full || (counterBefore.map { n.placed > $0.placed } ?? false) {
-                say("Placed slot \(slot) ✓ (counter now \(n.placed))")
+        if after.noYen && !before.noYen {
+            say("Slot \(slot): game says not enough yen")
+            await input.key("q"); try? await Task.sleep(nanoseconds: lag(200_000_000))
+            return .cantAfford
+        }
+
+        // 4) Verify with the counter (definitive when readable).
+        await input.key("q")                                                // drop the unit if still held
+        try? await Task.sleep(nanoseconds: lag(250_000_000))
+        await input.key(String(slot))
+        try? await Task.sleep(nanoseconds: lag(400_000_000))
+        let check = try? await ScreenCapture.captureRoblox()
+        await input.key("q")
+        try? await Task.sleep(nanoseconds: lag(200_000_000))
+        let counterAfter = check.flatMap { Self.readSlotCounter($0, slot: slot) }
+        let checkLimit = check.map(Self.placementLimitMessage) ?? false
+
+        if let b = counterBefore, let a = counterAfter {
+            if a.placed > b.placed {
+                say("Placed slot \(slot) ✓ (\(b.placed)/\(b.limit) → \(a.placed)/\(a.limit))")
                 return .placed
             }
+            say(String(format: "Slot %d: (%.3f, %.3f) didn't place (counter still %d/%d) — remembering it", slot, target.x, target.y, a.placed, a.limit))
+            lastFailWasClick = true
+            return .failed
         }
-        _ = base
+        // Counter unreadable on one side: fall back to signs that are NEW since the clean start.
+        if checkLimit && !before.limit && (counterBefore.map { $0.placed < $0.limit } ?? true) {
+            say("Placed slot \(slot) ✓ (slot is now at its limit)")
+            return .placed
+        }
+        if let a = counterAfter, a.placed >= a.limit, counterBefore.map({ $0.placed < $0.limit }) ?? true {
+            say("Placed slot \(slot) ✓ (\(a.placed)/\(a.limit))")
+            return .placed
+        }
+        if after.panel && !before.panel {
+            say("Placed slot \(slot) ✓ (unit panel opened)")
+            return .placed
+        }
+        if after.limit && !before.limit {
+            say("Placed slot \(slot) ✓ (game now says it's at its limit)")
+            return .placed
+        }
         say(String(format: "Slot %d: (%.3f, %.3f) didn't place — remembering it", slot, target.x, target.y))
         lastFailWasClick = true
         return .failed
@@ -2963,8 +3196,20 @@ final class MacroEngine: ObservableObject {
         let isWin = t.contains { w in Self.winWords.contains { w.contains($0) } }
         // The stylised DEFEAT/VICTORY art is often unreadable; the panel's own lines aren't.
         let panelLines = t.filter { $0.contains("wavescompleted") || $0.contains("totaltime") || $0.contains("xpprogress") }.count
-        let isLoss = t.contains { w in Self.lossWords.contains { w.contains($0) } } || (!isWin && panelLines >= 2)
-        if isWin || isLoss {
+        var isWinCareful = false
+        if !isWin, panelLines >= 2, !t.contains(where: { w in Self.lossWords.contains { w.contains($0) } }) {
+            // The quick read missed the big stylised word: read that spot carefully, and check its
+            // colour (VICTORY is gold, DEFEAT is red). A win was once logged as a loss here.
+            let area = CGRect(x: 0.25, y: 0.26, width: 0.32, height: 0.11)
+            let careful = ((try? OCR.read(img, region: area)) ?? []).map { OCR.norm($0.text) }
+            if careful.contains(where: { w in Self.winWords.contains { w.contains($0) } }) { isWinCareful = true }
+            else if !careful.contains(where: { w in Self.lossWords.contains { w.contains($0) } }),
+                    let c = Matcher.averageColor(in: img, rect: CGRect(x: 0.34, y: 0.29, width: 0.13, height: 0.045)),
+                    c.g > 0.45, c.r > 0.55, c.g > c.r * 0.6, c.b < c.g * 0.8 { isWinCareful = true }   // gold
+        }
+        if isWinCareful { lastResultWasVictory = true }
+        let isLoss = !isWinCareful && (t.contains { w in Self.lossWords.contains { w.contains($0) } } || (!isWin && panelLines >= 2))
+        if isWin || isWinCareful || isLoss {
             if isWin { lastResultWasVictory = true }
             sawResultPanel = true
             // "Next" is stylised — the quick reader often misses it. Read the panel accurately…
@@ -3056,6 +3301,7 @@ final class MacroEngine: ObservableObject {
         while Date() < end {
             try await handleCards()
             if let img = try? await ScreenCapture.captureRoblox() { try matchEndedCheck(img) }
+            try await keepAliveAndWatchDisconnect()
             try await Task.sleep(nanoseconds: lag(500_000_000))
         }
     }
@@ -3115,10 +3361,70 @@ final class MacroEngine: ObservableObject {
                 try await handleCards(img)
                 if let v = try check(img) { return v }
                 try matchEndedCheck(img)
+                try await keepAliveAndWatchDisconnect()
             }
             try await Task.sleep(nanoseconds: lag(500_000_000))
         }
         throw MacroError.timedOut(what)
+    }
+
+    /// "+14402" on the results panel (next to "+55 XP") = Summer Pearls earned that match.
+    static func pearlsEarned(_ img: CGImage) -> Int? {
+        guard let lines = try? OCR.read(img, region: CGRect(x: 0.28, y: 0.58, width: 0.30, height: 0.10)) else { return nil }
+        var best: Int?
+        for l in lines {
+            // "+55 ХP +14402" → take each "+number" that isn't the XP one
+            let parts = l.text.replacingOccurrences(of: ",", with: "").split(separator: "+")
+            for part in parts {
+                let p = part.trimmingCharacters(in: .whitespaces)
+                let digits = p.prefix { $0.isNumber }
+                guard let n = Int(digits), n > 0 else { continue }
+                let rest = p.dropFirst(digits.count).lowercased()
+                if rest.contains("xp") || rest.contains("хр") || rest.contains("хp") || rest.contains("x p") { continue }
+                best = max(best ?? 0, n)
+            }
+        }
+        return best
+    }
+
+    /// Reward screens: any item marked "Secret" → count it, screenshot it, ping Discord (once per match).
+    /// Ignores the level-modifier panel ("Secret Portal Rate Boost", "Secret Drop Rate").
+    private func checkForSecret(_ img: CGImage) {
+        guard !secretFoundThisMatch, let lines = try? OCR.read(img, fast: true) else { return }
+        let hit = lines.first { l in
+            let t = OCR.norm(l.text)
+            guard t.contains("secret"), l.box.midX < 0.78 else { return false }
+            return !["rate", "boost", "droprate", "chance", "portalrate", "luck"].contains { t.contains($0) }
+        }
+        guard let hit else { return }
+        secretFoundThisMatch = true
+        sessionSecrets += 1
+        let map = Self.mapName(fromTitle: currentTitle)
+        say("✦✦ SECRET item on the reward screen (\"\(hit.text)\") — screenshot saved")
+        DebugLog.savePNG(img, name: "\(DebugLog.stamp())-SECRET-\(map).png")
+        notify("✦ **Secret item!** on \(map.isEmpty ? "a map" : map) — \"\(hit.text)\" (secrets this session: \(sessionSecrets))", image: img)
+    }
+
+    /// Roblox kicks you after 20 minutes without input ("disconnected for being idle", error 278).
+    /// Long waits (everything maxed, waiting for the match to end) send a harmless key every
+    /// 4 minutes, and every ~15 s check for the Disconnected dialog so Reconnect gets clicked.
+    private var lastKeepAlive = Date()
+    private var lastDisconnectCheck = Date.distantPast
+    private func keepAliveAndWatchDisconnect() async throws {
+        if Date().timeIntervalSince(lastKeepAlive) > 240 {
+            lastKeepAlive = Date()
+            await input.key("q")          // cancels a held unit if any; otherwise does nothing
+        }
+        if state != .idle, Date().timeIntervalSince(lastMatchEnded) > 45 * 60,
+           Date().timeIntervalSince(lastStuckPing) > 45 * 60 {
+            lastStuckPing = Date()
+            let shot = try? await ScreenCapture.captureRoblox()
+            notify("⚠️ AA Macro: no match has finished in 45+ minutes (state: \(state.rawValue)). It may be stuck — here's the screen.", image: shot)
+        }
+        if Date().timeIntervalSince(lastDisconnectCheck) > 15 {
+            lastDisconnectCheck = Date()
+            if await handleDisconnect() { throw MacroError.timedOut("disconnected — reconnecting") }
+        }
     }
 
     /// Every wait in a stage also watches for the VICTORY/DEFEAT panel. Without this, a wait for

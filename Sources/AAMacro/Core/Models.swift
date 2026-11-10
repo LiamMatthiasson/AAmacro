@@ -83,6 +83,9 @@ struct MapProfile: Codable, Identifiable {
     var taught: [TaughtSpot]? = nil
     /// Learned automatically: where each copy of each slot last went down successfully.
     var learned: [TaughtSpot]? = nil
+    /// Set when a whole match of searching found NO hill spot (Snowy Town: no hills near spawn).
+    /// Hill units then only get a short try there instead of minutes of clicking.
+    var noHills: Bool? = nil
     /// Results on this map (to spot maps that need their own [Map] steps).
     var wins: Int? = nil
     var losses: Int? = nil
@@ -139,6 +142,8 @@ struct MacroSettings: Codable {
     var mode: GameMode = .summerHunt
     /// Teach mode only asks you for hill units; ground units are placed automatically.
     var teachHillsOnly: Bool = true
+    /// Discord webhook URL for alerts (secrets found, stuck, session summary). Empty = off.
+    var discordWebhook: String = ""
     /// Placement cost per slot, typed in on the Unit cards (overrides reading it off the hotbar).
     var unitCost: [Int: Int] = [:]
     /// Units the game won't let you sell — never used to test-place spots during a scan.
@@ -194,6 +199,7 @@ extension MacroSettings {
         get(.teachMode, &teachMode)
         get(.mode, &mode)
         get(.teachHillsOnly, &teachHillsOnly)
+        get(.discordWebhook, &discordWebhook)
         get(.unitCost, &unitCost)
         get(.unsellableSlots, &unsellableSlots)
         get(.cameraReset, &cameraReset)

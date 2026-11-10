@@ -12,6 +12,11 @@ struct RootView: View {
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
+        .fontDesign(.rounded)
+        .tint(Color(red: 1.00, green: 0.45, blue: 0.68))
+        .background(LinearGradient(colors: [Color(red: 1.00, green: 0.93, blue: 0.96), Color(red: 0.93, green: 0.91, blue: 1.00)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+        .environment(\.colorScheme, .light)
         .onAppear { DockPanel.shared.openMainWindow = { openWindow(id: "main") } }
     }
 }
@@ -238,6 +243,11 @@ struct MapDataView: View {
                 TableColumn("Learned") { p in Text("\(p.learned?.count ?? 0)") }.width(60)
                 TableColumn("Ground / Hill") { p in Text("\(p.ground.count) / \(p.hill.count)") }.width(90)
                 TableColumn("Bad spots") { p in Text("\((p.badGround?.count ?? 0) + (p.badHill?.count ?? 0))") }.width(70)
+                TableColumn("Hills?") { p in
+                    Button(p.noHills == true ? "none ↺" : "yes") {
+                        var q = p; q.noHills = (p.noHills == true) ? nil : true; store.saveProfile(q)
+                    }.buttonStyle(.borderless).help("\"none\" = hill units skip the search on this map. Click to toggle.")
+                }.width(60)
                 TableColumn("") { p in
                     HStack {
                         Button("Forget layout") {

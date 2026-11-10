@@ -13,8 +13,9 @@ swift build -c release
 echo "▸ Packaging $APP"
 pkill -x AAMacro 2>/dev/null || true
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/AAMacro "$APP/Contents/MacOS/AAMacro"
+[ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,6 +24,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>AAMacro</string>
   <key>CFBundleDisplayName</key><string>AA Macro</string>
   <key>CFBundleExecutable</key><string>AAMacro</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -51,6 +53,7 @@ else
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 
+touch "$APP"   # so Finder/Dock pick up the new icon
 echo "▸ Launching"
 open "$APP"
 echo "✓ Done. First run: allow Screen Recording + Accessibility for 'AA Macro', then quit and reopen it."

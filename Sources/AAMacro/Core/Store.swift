@@ -54,7 +54,29 @@ final class Store: ObservableObject {
 
     /// A known map whose name is within 2 letters of this one (so OCR slips don't create a
     /// second copy of the same map), else the name itself.
+    /// Every Summer Hunt map seen so far, spelled correctly. Names are matched against this list
+    /// first, so a misread can only ever land on a real map (or on a new, unknown name).
+    static let knownMapNames = [
+        "Adventurer Town", "Alien Spaceship", "Assassin Park", "Cursed Festival", "Dungeon Throne",
+        "Fabled Kingdom", "Future City", "Hellish City", "Magic Town", "Mountain Temple", "Navy Bay",
+        "Nightmare Train", "Otherwordly Plane", "Planet Greenie", "Ruined City", "Sand Village",
+        "Sky Aircraft", "Sky Island", "Snowy Kingdom", "Snowy Town", "Spirit World", "Storm Hideout",
+        "Strange Town", "Walled City",
+    ]
+
+    /// Closest correctly-spelled known map name, or nil.
+    static func knownMap(_ name: String) -> String? {
+        let n = OCR.norm(name)
+        guard n.count >= 5 else { return nil }
+        // Contained in a longer misread ("ve O walled city …")? Longest match wins.
+        if let inside = knownMapNames.filter({ n.contains(OCR.norm($0)) }).max(by: { $0.count < $1.count }) { return inside }
+        let best = knownMapNames.map { ($0, editDistance(n, OCR.norm($0))) }.min { $0.1 < $1.1 }
+        if let best, best.1 <= (n.count >= 12 ? 3 : n.count >= 6 ? 2 : 1) { return best.0 }
+        return nil
+    }
+
     func canonicalName(_ name: String) -> String {
+        if let k = Self.knownMap(name) { return k }
         let n = OCR.norm(name)
         guard n.count >= 5 else { return name }
         // A known map's name inside a longer misread ("ve O walled city") → that map.
@@ -92,6 +114,32 @@ final class Store: ObservableObject {
             if !profiles.contains(where: { $0.name == "Adventurer Town" }) && bad.ground.count + bad.hill.count > 0 {
                 var fixed = bad; fixed.name = "Adventurer Town"
                 saveProfile(fixed)
+            }
+        }
+        // Maps saved under a misread name ("Dunaeon Throne", "Navy Ban", "Walled Cito Smmer Hunt")
+        // are renamed to the real map; if the real one exists too, the one with more data is kept.
+        for p in profiles {
+            guard let real = Self.knownMap(p.name), real != p.name else { continue }
+            let existing = profiles.first { $0.name == real }
+            func weight(_ x: MapProfile) -> Int {
+                x.ground.count + x.hill.count + (x.learned?.count ?? 0) * 5 + (x.taught?.count ?? 0) * 10
+            }
+            try? FileManager.default.removeItem(at: profilesDir.appendingPathComponent("\(p.name).json"))
+            profiles.removeAll { $0.name == p.name }
+            if let e = existing, weight(e) >= weight(p) {
+                var merged = e
+                if merged.taught == nil { merged.taught = p.taught }
+                if merged.learned == nil { merged.learned = p.learned }
+                merged.wins = (e.wins ?? 0) + (p.wins ?? 0); merged.losses = (e.losses ?? 0) + (p.losses ?? 0)
+                saveProfile(merged)
+            } else {
+                var renamed = p; renamed.name = real
+                if let e = existing {
+                    if renamed.taught == nil { renamed.taught = e.taught }
+                    if renamed.learned == nil { renamed.learned = e.learned }
+                    renamed.wins = (e.wins ?? 0) + (p.wins ?? 0); renamed.losses = (e.losses ?? 0) + (p.losses ?? 0)
+                }
+                saveProfile(renamed)
             }
         }
         let dec = JSONDecoder()
