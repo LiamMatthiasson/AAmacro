@@ -191,6 +191,29 @@ final class Store: ObservableObject {
         return file
     }
 
+    var walksDir: URL {
+        let d = root.appendingPathComponent("walks")
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+    func saveWalk(_ w: WalkRecording) {
+        let enc = JSONEncoder(); enc.outputFormatting = .prettyPrinted
+        try? enc.encode(w).write(to: walksDir.appendingPathComponent("\(w.name).json"), options: .atomic)
+    }
+    func walk(named name: String) -> WalkRecording? {
+        guard let d = try? Data(contentsOf: walksDir.appendingPathComponent("\(name).json")) else { return nil }
+        return try? JSONDecoder().decode(WalkRecording.self, from: d)
+    }
+
+    func savePlan(_ p: PortalPlan) {
+        let enc = JSONEncoder(); enc.outputFormatting = .prettyPrinted
+        try? enc.encode(p).write(to: walksDir.appendingPathComponent("plan-\(p.name).json"), options: .atomic)
+    }
+    func plan(named name: String) -> PortalPlan? {
+        guard let d = try? Data(contentsOf: walksDir.appendingPathComponent("plan-\(name).json")) else { return nil }
+        return try? JSONDecoder().decode(PortalPlan.self, from: d)
+    }
+
     func reference(_ file: String) -> CGImage? {
         NSImage(contentsOf: referencesDir.appendingPathComponent(file))?
             .cgImage(forProposedRect: nil, context: nil, hints: nil)

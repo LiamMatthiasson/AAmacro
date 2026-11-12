@@ -54,7 +54,30 @@ struct MapRecording: Codable, Identifiable, Hashable {
 /// cards, upgrades, results and recovery are shared. Only Summer Hunt exists so far.
 enum GameMode: String, Codable, CaseIterable, Identifiable {
     case summerHunt = "Summer Hunt"
+    /// Portals: teach/test tools only for now — Start is blocked until the full mode is built.
+    case portal = "Portal"
     var id: String { rawValue }
+}
+
+/// A recorded right-click walk (spawn → your setup spot) for one map, plus a picture of the view
+/// at the end, used to line the character up exactly before placing.
+struct WalkRecording: Codable {
+    var name: String
+    var clicks: [NormPoint]
+    var gaps: [Double]            // seconds between clicks when you recorded it
+    var referenceImage: String?
+}
+
+/// A strict, taught game plan for one (portal) map: the walk from spawn, then every placement and
+/// upgrade in exactly the order you did them.
+struct PortalPlan: Codable {
+    enum Action: Codable {
+        case place(slot: Int, at: NormPoint)
+        case upgrade(unit: Int, times: Int)      // unit = index into this plan's placements
+    }
+    var name: String
+    var walk: WalkRecording?
+    var actions: [Action]
 }
 
 /// A spot you placed a unit yourself in Teach mode.

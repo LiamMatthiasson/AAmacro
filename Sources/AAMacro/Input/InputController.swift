@@ -34,6 +34,20 @@ struct InputController {
         await pause()
     }
 
+    /// Right click (Roblox "right click to move" walks the character there).
+    func rightClick(_ p: NormPoint) async {
+        guard let pt = WindowManager.screenPoint(p) else { return }
+        await gate()
+        move(to: CGPoint(x: pt.x + 1, y: pt.y + 1)); await pause(20)
+        move(to: pt); await pause()
+        CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: pt, mouseButton: .right)?
+            .post(tap: .cghidEventTap)
+        await pause(70)
+        CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: pt, mouseButton: .right)?
+            .post(tap: .cghidEventTap)
+        await pause()
+    }
+
     /// Move (no click) to a point given as a fraction of the Roblox window.
     func move(_ p: NormPoint) {
         if let s = WindowManager.screenPoint(p) { move(to: s) }

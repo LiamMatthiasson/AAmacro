@@ -112,9 +112,9 @@ struct SlotListField: View {
 /// Y2K "pastel desktop" theme ✦ — every section is a little retro window: lavender outline,
 /// gradient title bar with tiny window buttons, hard drop shadow, on a pastel grid background.
 private enum Theme {
-    static let bgTop = Color(red: 0.98, green: 0.84, blue: 0.95)      // pink
-    static let bgMid = Color(red: 0.86, green: 0.82, blue: 1.00)      // lavender
-    static let bgBottom = Color(red: 0.80, green: 0.92, blue: 1.00)   // baby blue
+    static let bgTop = Color(red: 0.99, green: 0.93, blue: 0.97)      // milky pink
+    static let bgMid = Color(red: 0.95, green: 0.93, blue: 1.00)      // milky lavender
+    static let bgBottom = Color(red: 0.92, green: 0.96, blue: 1.00)   // milky blue
     static let grid = Color.white.opacity(0.45)
     static let outline = Color(red: 0.55, green: 0.47, blue: 0.90)    // periwinkle outline
     static let shadow = Color(red: 0.62, green: 0.55, blue: 0.95).opacity(0.55)
@@ -150,78 +150,102 @@ private enum Theme {
     }
 }
 
-/// Faint white grid + a few sparkles, like the background of a pastel desktop.
+/// Pixel-art look: flat colours, hard edges, no gradients/blur/soft shadows (cheap to draw).
+enum Pix {
+    static let ink = Color(red: 0.24, green: 0.17, blue: 0.33)          // dark plum outline
+    static let paper = Color(red: 1.00, green: 0.97, blue: 0.99)
+    static let bg = Color(red: 0.98, green: 0.90, blue: 0.95)           // flat pastel pink
+    static let dot = Color(red: 0.93, green: 0.80, blue: 0.90)
+    static let font = Font.system(size: 11, weight: .semibold, design: .monospaced)
+    static func font(_ size: CGFloat, _ w: Font.Weight = .bold) -> Font { .system(size: size, weight: w, design: .monospaced) }
+}
+
+/// Flat pastel background with a sparse pixel dot pattern (drawn once, off the main thread).
 private struct PastelGrid: View {
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Theme.bgTop, Theme.bgMid, Theme.bgBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
-            // soft glowing blobs for depth
-            GeometryReader { g in
+            Pix.bg
+            Canvas(rendersAsynchronously: true) { ctx, size in
+                var y: CGFloat = 6
+                var row = 0
+                while y < size.height {
+                    var x: CGFloat = row % 2 == 0 ? 6 : 18
+                    while x < size.width { ctx.fill(Path(CGRect(x: x, y: y, width: 2, height: 2)), with: .color(Pix.dot)); x += 24 }
+                    y += 12; row += 1
+                }
+            }
+        }
+    }
+}
+
+/// A chunky pixel box: 2 px dark outline, light top-left bevel, dark bottom-right bevel.
+struct PixelBox: ViewModifier {
+    var fill: Color
+    var pressed = false
+    func body(content: Content) -> some View {
+        content
+            .background(
                 ZStack {
-                    Circle().fill(Color(red: 1.0, green: 0.70, blue: 0.88).opacity(0.55)).frame(width: g.size.height * 1.2)
-                        .position(x: g.size.width * 0.12, y: g.size.height * 0.2)
-                    Circle().fill(Color(red: 0.62, green: 0.95, blue: 0.86).opacity(0.45)).frame(width: g.size.height * 1.0)
-                        .position(x: g.size.width * 0.85, y: g.size.height * 0.85)
-                    Circle().fill(Color(red: 0.70, green: 0.80, blue: 1.0).opacity(0.5)).frame(width: g.size.height * 0.9)
-                        .position(x: g.size.width * 0.55, y: g.size.height * 0.1)
+                    Rectangle().fill(Pix.ink)
+                    Rectangle().fill(fill).padding(2)
+                    // bevel
+                    VStack(spacing: 0) {
+                        Rectangle().fill(.white.opacity(pressed ? 0 : 0.75)).frame(height: 2)
+                        Spacer(minLength: 0)
+                    }.padding(2)
+                    HStack(spacing: 0) {
+                        Rectangle().fill(.white.opacity(pressed ? 0 : 0.75)).frame(width: 2)
+                        Spacer(minLength: 0)
+                    }.padding(2)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        Rectangle().fill(Pix.ink.opacity(pressed ? 0.05 : 0.22)).frame(height: 2)
+                    }.padding(2)
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        Rectangle().fill(Pix.ink.opacity(pressed ? 0.05 : 0.22)).frame(width: 2)
+                    }.padding(2)
                 }
-                .blur(radius: 40)
-            }
-            Canvas { ctx, size in
-                var path = Path()
-                let step: CGFloat = 18
-                var x: CGFloat = 0
-                while x < size.width { path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height)); x += step }
-                var y: CGFloat = 0
-                while y < size.height { path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: size.width, y: y)); y += step }
-                ctx.stroke(path, with: .color(Theme.grid), lineWidth: 0.6)
-                // sparkles ✦
-                let spots: [(CGFloat, CGFloat, CGFloat)] = [(0.08, 0.15, 7), (0.92, 0.10, 6), (0.55, 0.88, 5), (0.30, 0.55, 4), (0.78, 0.70, 6)]
-                for (fx, fy, r) in spots {
-                    let c = CGPoint(x: fx * size.width, y: fy * size.height)
-                    var star = Path()
-                    star.move(to: CGPoint(x: c.x, y: c.y - r)); star.addQuadCurve(to: CGPoint(x: c.x + r, y: c.y), control: c)
-                    star.addQuadCurve(to: CGPoint(x: c.x, y: c.y + r), control: c); star.addQuadCurve(to: CGPoint(x: c.x - r, y: c.y), control: c)
-                    star.addQuadCurve(to: CGPoint(x: c.x, y: c.y - r), control: c)
-                    ctx.fill(star, with: .color(.white.opacity(0.9)))
-                }
-            }
-        }
+            )
+            // hard 2 px drop shadow, the classic pixel-UI look
+            .background(Rectangle().fill(Pix.ink.opacity(0.35)).offset(x: 3, y: 3))
     }
 }
 
-/// Tiny decorative window buttons ( _ □ × ) for the title bars.
-private struct WindowDots: View {
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(["minus", "square", "xmark"], id: \.self) { n in
-                Image(systemName: n).font(.system(size: 6, weight: .black))
-                    .frame(width: 11, height: 11)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.85)))
-                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Theme.outline, lineWidth: 1))
-                    .foregroundStyle(Theme.outline)
-            }
-        }
-    }
+extension View {
+    func pixelBox(_ fill: Color, pressed: Bool = false) -> some View { modifier(PixelBox(fill: fill, pressed: pressed)) }
 }
 
-/// Segmented rainbow progress bar ("loading good things…").
+/// Segmented pixel health bar.
 struct RainbowBar: View {
     var value: Double          // 0…1
     var segments = 12
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 1) {
             ForEach(0..<segments, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Double(i) < value * Double(segments) ? Theme.rainbow[i * Theme.rainbow.count / segments] : Color.white.opacity(0.7))
-                    .overlay(RoundedRectangle(cornerRadius: 2).fill(LinearGradient(colors: [.white.opacity(0.7), .clear],
-                                                                                    startPoint: .top, endPoint: .center)))
-                    .frame(height: 9)
+                Rectangle()
+                    .fill(Double(i) < value * Double(segments) ? Theme.rainbow[i * Theme.rainbow.count / segments] : Pix.paper)
+                    .frame(height: 8)
             }
         }
         .padding(2)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.6)))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.outline, lineWidth: 1))
+        .background(Rectangle().fill(Pix.ink))
+    }
+}
+
+/// Each window gets its own flat candy colour (units cycle pink, mint, lavender, blue, peach, lemon).
+private func jellyTint(for title: String) -> Color {
+    let palette: [Color] = [Color(red: 1.00, green: 0.80, blue: 0.89), Color(red: 0.76, green: 0.95, blue: 0.87),
+                            Color(red: 0.87, green: 0.82, blue: 1.00), Color(red: 0.80, green: 0.89, blue: 1.00),
+                            Color(red: 1.00, green: 0.87, blue: 0.80), Color(red: 1.00, green: 0.95, blue: 0.76)]
+    if title.hasPrefix("Unit "), let n = Int(title.dropFirst(5)) { return palette[(n - 1) % palette.count] }
+    switch title {
+    case "Auto placement": return palette[2]
+    case "Current Process": return palette[3]
+    case "Settings": return palette[0]
+    case "Statistics": return palette[1]
+    case "Record": return palette[4]
+    default: return palette[2]
     }
 }
 
@@ -229,40 +253,26 @@ private struct FrameSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
+        let tint = jellyTint(for: title)
         VStack(alignment: .leading, spacing: 0) {
-            // title bar
+            // solid title strip
             HStack(spacing: 4) {
-                Text(Theme.decorate(title)).font(.system(size: 10.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(Theme.title).lineLimit(1)
+                Text(Theme.decorate(title)).font(Pix.font(10.5, .heavy)).foregroundStyle(Pix.ink).lineLimit(1)
                 Spacer(minLength: 2)
-                WindowDots()
+                HStack(spacing: 2) {      // tiny pixel window buttons
+                    ForEach(0..<3, id: \.self) { _ in Rectangle().fill(Pix.paper).frame(width: 7, height: 7)
+                        .overlay(Rectangle().strokeBorder(Pix.ink, lineWidth: 1.5)) }
+                }
             }
-            .padding(.horizontal, 7).padding(.vertical, 4)
-            .background(Theme.titleBar)
-            .overlay(alignment: .top) {      // glossy sheen on the top half of the title bar
-                LinearGradient(colors: [.white.opacity(0.85), .white.opacity(0.15)], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 9).blendMode(.screen).allowsHitTesting(false)
-            }
-            .overlay(alignment: .bottom) { Rectangle().fill(Theme.outline).frame(height: 1.5) }
-            // body
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(tint)
+            .overlay(alignment: .bottom) { Rectangle().fill(Pix.ink).frame(height: 2) }
             VStack(alignment: .leading, spacing: 4) { content }
                 .padding(7)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background(
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)                             // Apple-style glass
-                LinearGradient(colors: [.white.opacity(0.92), Color(red: 0.97, green: 0.94, blue: 1.0).opacity(0.85),
-                                        Color(red: 0.93, green: 0.97, blue: 1.0).opacity(0.85)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                LinearGradient(colors: [.white.opacity(0.6), .clear], startPoint: .top, endPoint: .center)   // gloss
-            }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .stroke(LinearGradient(colors: [Color(red: 1.0, green: 0.55, blue: 0.80), Theme.outline, Color(red: 0.45, green: 0.70, blue: 1.0)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.8))
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.shadow).offset(x: 3, y: 3))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .pixelBox(Pix.paper)
         .padding(.trailing, 3).padding(.bottom, 3)
     }
 }
@@ -273,11 +283,10 @@ private struct FramePanel<Content: View>: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(PastelGrid())
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Theme.outline, lineWidth: 2))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .font(.system(size: 11, design: .rounded))
-            .foregroundStyle(Theme.ink)
-            .tint(Theme.accent)
+            .overlay(Rectangle().strokeBorder(Pix.ink, lineWidth: 2))
+            .font(Pix.font)
+            .foregroundStyle(Pix.ink)
+            .tint(Color(red: 1.0, green: 0.45, blue: 0.70))
             .environment(\.colorScheme, .light)
     }
 }
@@ -299,9 +308,9 @@ struct FrameTopBar: View {
         FramePanel {
             HStack(spacing: 10) {
                 Mochi(engine: engine)
-                Text("✿ AA Macro ✿").font(.system(size: 14, weight: .black, design: .rounded))
-                    .foregroundStyle(LinearGradient(colors: [Theme.accent, Color(red: 0.62, green: 0.45, blue: 1.0)],
-                                                    startPoint: .leading, endPoint: .trailing))
+                Text("AA MACRO").font(Pix.font(14, .black))
+                    .foregroundStyle(Color(red: 0.90, green: 0.36, blue: 0.62))
+                    .background(Text("AA MACRO").font(Pix.font(14, .black)).foregroundStyle(Pix.ink).offset(x: 1.5, y: 1.5))
                 Picker("", selection: $store.settings.mode) {
                     ForEach(GameMode.allCases) { m in Text(m.rawValue).tag(m) }
                 }
@@ -316,7 +325,7 @@ struct FrameTopBar: View {
                 HStack(spacing: 4) {
                     Text("☆").foregroundStyle(Theme.accent)
                     Text(running ? "welcome to aa macro ♡ — \(engine.state.rawValue)" : (recorder.isRecording ? "recording…" : "welcome to aa macro ♡ — napping 💤"))
-                        .font(.system(size: 10.5, weight: .semibold, design: .rounded)).lineLimit(1)
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced)).lineLimit(1)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 3)
                 .frame(minWidth: 220, alignment: .leading)
@@ -334,18 +343,11 @@ struct FrameTopBar: View {
                 Button {
                     if running { engine.stop() } else { engine.start() }
                 } label: {
-                    Text(running ? "⏸ Stop (F6)" : "▶︎ Start ♡")
-                        .font(.system(size: 12, weight: .heavy, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14).padding(.vertical, 4)
-                        .background(Capsule().fill(LinearGradient(
-                            colors: running ? [Color(red: 1, green: 0.55, blue: 0.62), Color(red: 0.95, green: 0.42, blue: 0.55)]
-                                            : [Color(red: 1, green: 0.55, blue: 0.78), Color(red: 0.78, green: 0.58, blue: 1.0)],
-                            startPoint: .leading, endPoint: .trailing)))
-                        .overlay(Capsule().fill(LinearGradient(colors: [.white.opacity(0.65), .clear],
-                                                               startPoint: .top, endPoint: .center)).padding(1.5))
-                        .overlay(Capsule().stroke(Theme.outline, lineWidth: 1.5))
-                        .background(Capsule().fill(Theme.shadow).offset(x: 2, y: 2))
+                    Text(running ? "■ STOP (F6)" : "▶ START")
+                        .font(Pix.font(12, .black))
+                        .foregroundStyle(Pix.ink)
+                        .padding(.horizontal, 12).padding(.vertical, 4)
+                        .pixelBox(running ? Color(red: 1.0, green: 0.70, blue: 0.72) : Color(red: 1.0, green: 0.78, blue: 0.90))
                 }
                 .buttonStyle(.plain)
                 .disabled(recorder.isRecording)
@@ -369,7 +371,7 @@ struct FrameTopBar: View {
         HStack(spacing: 3) {
             Image(systemName: ok ? "heart.fill" : "heart.slash.fill").foregroundStyle(ok ? Theme.accent : .gray)
             Text(name).foregroundStyle(.secondary)
-        }.font(.system(size: 10, design: .rounded))
+        }.font(.system(size: 10, design: .monospaced))
     }
 }
 
@@ -382,7 +384,7 @@ struct FrameRightColumn: View {
         FramePanel {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("🎀 My Team 🎀").font(.system(size: 15, weight: .black, design: .rounded))
+                    Text("🎀 My Team 🎀").font(.system(size: 15, weight: .black, design: .monospaced))
                         .foregroundStyle(Theme.title).frame(maxWidth: .infinity)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible())], spacing: 6) {
                         ForEach(1...6, id: \.self) { UnitCard(slot: $0) }
@@ -399,32 +401,32 @@ struct FrameRightColumn: View {
                             .help("Ground units are placed automatically (they already do well); you only place the hill units once per map.")
                             .help("On a map you haven't taught yet, you place the units yourself and pick cards; the macro saves where each slot went. Maps already taught play automatically. Turn off before sleeping.")
                         Text("Taught maps: \(store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", ").isEmpty ? "none yet" : store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", "))")
-                            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                         HStack {
                             Text("Place order")
                             SlotListField(slots: $store.settings.autoPlaceOrder)
                         }
                         Text("Slots placed first → last. Repeat a slot to place it twice (e.g. 6 1 3 1).")
-                            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
-                        Text("Steps (optional — overrides Place order)").font(.system(size: 10, weight: .bold, design: .rounded)).padding(.top, 4)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                        Text("Steps (optional — overrides Place order)").font(.system(size: 10, weight: .bold, design: .monospaced)).padding(.top, 4)
                         TextEditor(text: $store.settings.autoSteps)
                             .font(.system(size: 11, design: .monospaced))
                             .frame(height: 130)
                             .scrollContentBackground(.hidden)
                             .background(Color.white.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
                         Text("One per line: place 6 · place 2 x4 · upgrade 6 max · upgrade 1 +3 · upgrade all max · wait wave 10 · wait 30")
-                            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                         Text("Map-specific steps: add a line like [Storm Hideout] and that map's steps below it. Steps above the first [Map] line are for every other map.")
-                            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                         let check = MacroEngine.parseSteps(store.settings.autoSteps)
                         if !check.problems.isEmpty {
                             Text("Not understood: " + check.problems.joined(separator: ", "))
-                                .font(.system(size: 9, design: .rounded)).foregroundStyle(.orange)
+                                .font(.system(size: 9, design: .monospaced)).foregroundStyle(.orange)
                         }
                         Stepper("Upgrade levels right after placing: \(store.settings.autoEarlyUpgrades >= 15 ? "MAX" : "\(store.settings.autoEarlyUpgrades)")",
                                 value: $store.settings.autoEarlyUpgrades, in: 0...15)
                         Text("For Priority units only — how many levels they get before the next unit is placed. MAX = fully upgrade first.")
-                            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                     }
                     .toggleStyle(.checkbox).controlSize(.small)
                 }
@@ -464,7 +466,7 @@ struct UnitCard: View {
             .toggleStyle(.checkbox)
             .help("The game won't let you sell this unit — scans never test-place with it.")
             if let rank = store.settings.prioritySlots.firstIndex(of: slot) {
-                Text("upgrade order #\(rank + 1)").font(.system(size: 9, design: .rounded)).foregroundStyle(Theme.accent)
+                Text("upgrade order #\(rank + 1)").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.accent)
             }
             HStack(spacing: 2) {
                 Text("Max upgrade").foregroundStyle(.secondary)
@@ -497,7 +499,7 @@ struct UnitCard: View {
             }
         }
         .controlSize(.mini)
-        .font(.system(size: 10, design: .rounded))
+        .font(.system(size: 10, design: .monospaced))
     }
 
     private var maxLevel: Int { store.settings.maxLevelPerSlot[slot] ?? 0 }
@@ -591,30 +593,49 @@ struct FrameBottomStrip: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
                     TextField("Map name", text: $mapName).textFieldStyle(.roundedBorder)
-                    Button(recorder.isRecording ? "Stop & save" : "Record map") {
-                        if recorder.isRecording { recorder.stop() } else if !mapName.isEmpty { recorder.start(mapName: mapName) }
+                    if store.settings.mode == .portal {
+                        // ── Portal tools (only in Portal mode) ──
+                        HStack(spacing: 4) {
+                            Button(engine.planTeaching ? "Stop & save plan" : "Teach portal") { engine.togglePlanTeach(name: mapName) }
+                                .tint(engine.planTeaching ? .red : .pink).buttonStyle(.borderedProminent)
+                                .help("At spawn: press, RIGHT-click your way to your spot, place your units, upgrade them in your order (click unit + R). Press again to save. Named after the Map name box.")
+                            Button("Test plan") { engine.testPlan(name: mapName) }
+                                .disabled(engine.planTeaching)
+                                .help("In a match at spawn: walks, lines up, then places and upgrades exactly in your taught order.")
+                        }
+                        HStack(spacing: 4) {
+                            Button(engine.walkRecording ? "Stop & save walk" : "Record walk") { engine.toggleRecordWalk(name: mapName) }
+                                .tint(engine.walkRecording ? .red : .teal).buttonStyle(.borderedProminent)
+                                .help("Portal groundwork: at spawn, press this, RIGHT-click your way to your setup spot, press again. Saves the clicks + the end view (named after the Map name box or the stage).")
+                            Button("Test walk") { engine.testWalk(name: mapName) }
+                                .disabled(engine.walkRecording)
+                                .help("Replays the saved walk for this map from spawn, then lines up with the saved end view.")
+                        }
+                    } else {
+                        // ── Summer Hunt tools ──
+                        Button(recorder.isRecording ? "Stop & save" : "Record map") {
+                            if recorder.isRecording { recorder.stop() } else if !mapName.isEmpty { recorder.start(mapName: mapName) }
+                        }
+                        .tint(recorder.isRecording ? .red : Theme.accent).buttonStyle(.borderedProminent)
+                        .disabled(engine.state != .idle)
+                        Text(recorder.isRecording ? "\(recorder.actions.count) steps" : "Start during the vote screen")
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(recorder.isRecording ? .red : .secondary)
+                        Button(engine.scanning ? "Stop scan" : "Scan map") {
+                            if engine.scanning { engine.stop() } else { engine.scanMap(name: mapName) }
+                        }
+                        .tint(engine.scanning ? .red : .teal).buttonStyle(.borderedProminent)
+                        .disabled(engine.state != .idle || recorder.isRecording)
+                        .help("Start the stage and place one unit yourself first. Then: teleports to spawn, sets the camera, then tests every spot for ground + hill units and watches enemies to learn the lane. Name = the box above, or read from the title.")
+                        Button(engine.teachNowActive ? "Stop teaching" : "Teach now") { engine.teachNow(name: mapName) }
+                            .tint(engine.teachNowActive ? .red : .orange).buttonStyle(.borderedProminent)
+                            .disabled(recorder.isRecording || engine.scanning)
+                            .help("Teach placements any time. Macro running: it asks you for units for the rest of this match and the next one. Macro stopped: just play — every unit you place is saved for this map.")
+                        Button("Test scan") { engine.testScan(name: mapName) }
+                            .disabled(engine.state != .idle || recorder.isRecording || engine.scanning)
+                            .help("In a stage on a scanned map: places each unit on its saved spots (middle of the map first) and reports how many spots were good.")
                     }
-                    .tint(recorder.isRecording ? .red : Theme.accent).buttonStyle(.borderedProminent)
-                    .disabled(engine.state != .idle)
-                    Text(recorder.isRecording ? "\(recorder.actions.count) steps" : "Start during the vote screen")
-                        .font(.system(size: 9, design: .rounded)).foregroundStyle(recorder.isRecording ? .red : .secondary)
-                    Button(engine.scanning ? "Stop scan" : "Scan map") {
-                        if engine.scanning { engine.stop() } else { engine.scanMap(name: mapName) }
-                    }
-                    .tint(engine.scanning ? .red : .teal).buttonStyle(.borderedProminent)
-                    .disabled(engine.state != .idle || recorder.isRecording)
-                    .help("Start the stage and place one unit yourself first. Then: teleports to spawn, sets the camera, then tests every spot for ground + hill units and watches enemies to learn the lane. Name = the box above, or read from the title.")
-                    Button(engine.teachNowActive ? "Stop teaching" : "Teach now") { engine.teachNow(name: mapName) }
-                        .tint(engine.teachNowActive ? .red : .orange).buttonStyle(.borderedProminent)
-                        .disabled(recorder.isRecording || engine.scanning)
-                        .help("Teach placements any time. Macro running: it asks you for units for the rest of this match and the next one. Macro stopped: just play — every unit you place is saved for this map.")
-                    // Dungeon watch: hidden until Dungeon mode is worked on (keeps Summer mode untouched).
-                    // Button(engine.dungeonWatching ? "Stop dungeon watch" : "Dungeon watch") { engine.toggleDungeonWatch() }
-                    Button("Test scan") { engine.testScan(name: mapName) }
-                        .disabled(engine.state != .idle || recorder.isRecording || engine.scanning)
-                        .help("In a stage on a scanned map: places each unit on its saved spots (middle of the map first) and reports how many spots were good.")
                     Text(engine.scanning ? engine.scanProgress : "\(store.profiles.count) maps scanned")
-                        .font(.system(size: 9, design: .rounded)).foregroundStyle(engine.scanning ? .teal : .secondary).lineLimit(2)
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(engine.scanning ? .teal : .secondary).lineLimit(2)
                                         }
                     }
                 }
@@ -637,10 +658,10 @@ struct FrameBottomStrip: View {
 }
 
 
-// MARK: - Mochi ♡ — the little companion in the top bar
+// MARK: - Mochi ♡ — the pixel slime companion in the top bar
 
-/// A glossy jelly-mochi buddy that bobs, blinks and reacts to what the macro is doing:
-/// asleep when idle, cheerful while running, celebrates wins, sulks after losses, worried on errors.
+/// Your slime sprite (the app icon), drawn crisp at 2×, with a 4-fps bob and little pixel extras:
+/// "z" while asleep, sparkles + hearts after a win, a tear after a loss, "?" when worried.
 struct Mochi: View {
     @ObservedObject var engine: MacroEngine
     @State private var mood: Mood = .sleepy
@@ -650,41 +671,65 @@ struct Mochi: View {
 
     enum Mood { case sleepy, happy, party, sad, worried }
 
+    static let sprite: NSImage? = {
+        if let u = Bundle.main.url(forResource: "slime", withExtension: "png"), let i = NSImage(contentsOf: u) { return i }
+        let dev = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/AAMacro/Resources/AppIcon.png")
+        return NSImage(contentsOf: dev)
+    }()
+
     private var line: String {
         switch mood {
-        case .sleepy:  return "すやすや… zzz"
-        case .happy:   return "がんばるぞ〜! ✨"
-        case .party:   return "やった〜!! 勝った 💖"
-        case .sad:     return "うぅ… 次は勝つ!"
-        case .worried: return "あれれ…? 🥺"
+        case .sleepy:  return "zzz… すやすや"
+        case .happy:   return "がんばるぞ〜!"
+        case .party:   return "やった〜!! WIN ♥"
+        case .sad:     return "うぅ… next time!"
+        case .worried: return "あれれ…?"
         }
     }
 
     var body: some View {
         HStack(spacing: 5) {
-            TimelineView(.animation) { tl in
-                let t = tl.date.timeIntervalSinceReferenceDate
-                let bob = mood == .sleepy ? sin(t * 1.2) * 0.8 : (mood == .party ? abs(sin(t * 6)) * -3 : sin(t * 2.4) * 1.5)
-                let blink = mood != .sleepy && t.truncatingRemainder(dividingBy: 3.6) < 0.13
-                face(blink: blink, t: t)
-                    .frame(width: 26, height: 22)
-                    .offset(y: bob)
+            TimelineView(.periodic(from: .now, by: mood == .sleepy ? 0.8 : 0.25)) { tl in
+                let frame = Int(tl.date.timeIntervalSinceReferenceDate / (mood == .sleepy ? 0.8 : 0.25))
+                let hop: CGFloat = mood == .party ? (frame % 2 == 0 ? -3 : 0) : (frame % 4 < 2 ? 0 : -1)
+                ZStack {
+                    if let img = Self.sprite {
+                        Image(nsImage: img).resizable().interpolation(.none).frame(width: 26, height: 26)
+                    } else {
+                        Rectangle().fill(Color(red: 1.0, green: 0.55, blue: 0.80)).frame(width: 18, height: 14)
+                    }
+                    extra(frame: frame)
+                }
+                .offset(y: hop)
+                .frame(width: 30, height: 28)
             }
-            .frame(width: 28, height: 26)
             Text(line)
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .foregroundStyle(Color(red: 0.45, green: 0.30, blue: 0.62))
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(
-                    Capsule().fill(LinearGradient(colors: [.white, Color(red: 1.0, green: 0.93, blue: 0.97)],
-                                                  startPoint: .top, endPoint: .bottom))
-                )
-                .overlay(Capsule().stroke(Color(red: 1.0, green: 0.62, blue: 0.82), lineWidth: 1))
+                .font(Pix.font(9.5, .bold))
+                .foregroundStyle(Pix.ink)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .pixelBox(Pix.paper)
                 .fixedSize()
         }
         .onAppear { seenWins = engine.wins; seenLosses = engine.losses; update() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in update() }
         .help("Mochi ♡")
+    }
+
+    @ViewBuilder private func extra(frame: Int) -> some View {
+        switch mood {
+        case .sleepy:
+            Text(frame % 2 == 0 ? "z" : "Z").font(Pix.font(8, .black)).foregroundStyle(Color(red: 0.45, green: 0.38, blue: 0.80))
+                .offset(x: 13, y: frame % 2 == 0 ? -10 : -13)
+        case .party:
+            Text("✦").font(.system(size: 8)).foregroundStyle(.yellow).offset(x: -13, y: frame % 2 == 0 ? -9 : -11)
+            Text("♥").font(Pix.font(8, .black)).foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.55)).offset(x: 13, y: frame % 2 == 0 ? -11 : -9)
+        case .sad:
+            Rectangle().fill(Color(red: 0.50, green: 0.75, blue: 1.0)).frame(width: 2, height: 3).offset(x: 6, y: CGFloat(frame % 4) * 2)
+        case .worried:
+            Text("?").font(Pix.font(9, .black)).foregroundStyle(Pix.ink).offset(x: 13, y: -11)
+        case .happy:
+            EmptyView()
+        }
     }
 
     private func update() {
@@ -695,71 +740,5 @@ struct Mochi: View {
         if engine.state == .idle { mood = .sleepy }
         else if engine.state == .recovering || (engine.log.last?.contains("⚠️") ?? false) { mood = .worried }
         else { mood = .happy }
-    }
-
-    @ViewBuilder private func face(blink: Bool, t: Double) -> some View {
-        ZStack {
-            // glossy jelly body
-            Ellipse()
-                .fill(LinearGradient(colors: [Color(red: 1.0, green: 0.80, blue: 0.92), Color(red: 0.86, green: 0.74, blue: 1.0)],
-                                     startPoint: .top, endPoint: .bottom))
-                .overlay(Ellipse().stroke(Color(red: 0.80, green: 0.52, blue: 0.90), lineWidth: 1))
-                .shadow(color: Color(red: 0.85, green: 0.5, blue: 0.95).opacity(0.5), radius: 2, y: 1)
-            Ellipse().fill(LinearGradient(colors: [.white.opacity(0.95), .white.opacity(0)], startPoint: .top, endPoint: .bottom))
-                .frame(width: 13, height: 6).offset(x: -4, y: -6)                      // shine
-            // blush
-            HStack(spacing: 10) {
-                Ellipse().fill(Color(red: 1.0, green: 0.55, blue: 0.70).opacity(0.7)).frame(width: 5, height: 3)
-                Ellipse().fill(Color(red: 1.0, green: 0.55, blue: 0.70).opacity(0.7)).frame(width: 5, height: 3)
-            }.offset(y: 3)
-            // eyes
-            HStack(spacing: 7) {
-                eye(blink: blink)
-                eye(blink: blink)
-            }.offset(y: -1)
-            // mouth
-            mouth.offset(y: 4.5)
-            // extras
-            if mood == .sleepy {
-                Text("z").font(.system(size: 7, weight: .black, design: .rounded))
-                    .foregroundStyle(Color(red: 0.55, green: 0.47, blue: 0.90))
-                    .offset(x: 12, y: -10 - CGFloat((t * 4).truncatingRemainder(dividingBy: 4)))
-                    .opacity(1 - (t * 1).truncatingRemainder(dividingBy: 1))
-            }
-            if mood == .party {
-                Text("✦").font(.system(size: 7)).foregroundStyle(.yellow).offset(x: -13, y: -9)
-                    .scaleEffect(0.8 + abs(sin(t * 5)) * 0.4)
-                Text("♡").font(.system(size: 7, weight: .bold)).foregroundStyle(.pink).offset(x: 13, y: -9)
-                    .scaleEffect(0.8 + abs(cos(t * 5)) * 0.4)
-            }
-            if mood == .sad {
-                Capsule().fill(Color(red: 0.55, green: 0.80, blue: 1.0)).frame(width: 2, height: 4)
-                    .offset(x: 6, y: 1 + CGFloat((t * 6).truncatingRemainder(dividingBy: 5)))
-            }
-        }
-    }
-
-    @ViewBuilder private func eye(blink: Bool) -> some View {
-        if mood == .sleepy || blink {
-            Capsule().fill(Color(red: 0.25, green: 0.18, blue: 0.35)).frame(width: 4, height: 1.3)
-        } else if mood == .party {
-            Text("♥").font(.system(size: 5.5, weight: .black)).foregroundStyle(Color(red: 1.0, green: 0.30, blue: 0.55))
-        } else {
-            ZStack(alignment: .topLeading) {
-                Ellipse().fill(Color(red: 0.25, green: 0.18, blue: 0.35)).frame(width: 3.6, height: 4.4)
-                Circle().fill(.white).frame(width: 1.4, height: 1.4).offset(x: 0.5, y: 0.6)   // sparkle
-            }
-        }
-    }
-
-    @ViewBuilder private var mouth: some View {
-        switch mood {
-        case .sad, .worried:
-            Capsule().fill(Color(red: 0.45, green: 0.22, blue: 0.40)).frame(width: 3.5, height: 1.2)
-        case .party:
-            Ellipse().fill(Color(red: 0.85, green: 0.30, blue: 0.45)).frame(width: 4.5, height: 3.5)
-        default:
-            Text("ω").font(.system(size: 6, weight: .bold)).foregroundStyle(Color(red: 0.45, green: 0.22, blue: 0.40))
-        }
     }
 }

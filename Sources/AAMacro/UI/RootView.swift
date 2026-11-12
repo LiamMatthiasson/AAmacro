@@ -12,10 +12,9 @@ struct RootView: View {
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
-        .fontDesign(.rounded)
+        .fontDesign(.monospaced)
         .tint(Color(red: 1.00, green: 0.45, blue: 0.68))
-        .background(LinearGradient(colors: [Color(red: 1.00, green: 0.93, blue: 0.96), Color(red: 0.93, green: 0.91, blue: 1.00)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+        .background(Color(red: 0.98, green: 0.92, blue: 0.96))
         .environment(\.colorScheme, .light)
         .onAppear { DockPanel.shared.openMainWindow = { openWindow(id: "main") } }
     }
