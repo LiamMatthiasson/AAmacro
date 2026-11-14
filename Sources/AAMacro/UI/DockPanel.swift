@@ -109,76 +109,45 @@ struct SlotListField: View {
 
 // MARK: - Shared look
 
-/// Y2K "pastel desktop" theme ✦ — every section is a little retro window: lavender outline,
-/// gradient title bar with tiny window buttons, hard drop shadow, on a pastel grid background.
-private enum Theme {
-    static let bgTop = Color(red: 0.99, green: 0.93, blue: 0.97)      // milky pink
-    static let bgMid = Color(red: 0.95, green: 0.93, blue: 1.00)      // milky lavender
-    static let bgBottom = Color(red: 0.92, green: 0.96, blue: 1.00)   // milky blue
-    static let grid = Color.white.opacity(0.45)
-    static let outline = Color(red: 0.55, green: 0.47, blue: 0.90)    // periwinkle outline
-    static let shadow = Color(red: 0.62, green: 0.55, blue: 0.95).opacity(0.55)
-    static let card = Color(red: 0.99, green: 0.98, blue: 1.00)
-    static let line = Color(red: 0.80, green: 0.75, blue: 1.00)
-    static let accent = Color(red: 1.00, green: 0.45, blue: 0.70)     // bubblegum pink
-    static let mint = Color(red: 0.55, green: 0.88, blue: 0.75)
-    static let ink = Color(red: 0.30, green: 0.25, blue: 0.48)        // soft indigo text
-    static let title = Color(red: 0.36, green: 0.30, blue: 0.62)
-    static let titleBar = LinearGradient(colors: [Color(red: 0.84, green: 0.80, blue: 1.00),
-                                                  Color(red: 0.98, green: 0.82, blue: 0.93),
-                                                  Color(red: 0.82, green: 0.92, blue: 1.00)],
-                                         startPoint: .leading, endPoint: .trailing)
-    static let rainbow: [Color] = [Color(red: 1, green: 0.62, blue: 0.75), Color(red: 1, green: 0.78, blue: 0.62),
-                                   Color(red: 1, green: 0.93, blue: 0.62), Color(red: 0.70, green: 0.92, blue: 0.70),
-                                   Color(red: 0.62, green: 0.85, blue: 1.00), Color(red: 0.75, green: 0.70, blue: 1.00)]
-
-    /// A little icon in front of every window title.
-    static func decorate(_ title: String) -> String {
-        if title.hasPrefix("Unit ") {
-            let icons = ["🌸", "🍓", "🍡", "🧁", "🍑", "⭐️"]
-            let n = Int(title.dropFirst(5)) ?? 1
-            return "\(icons[(n - 1 + icons.count) % icons.count]) unit \(n)"
-        }
-        switch title {
-        case "Auto placement": return "🪄 auto placement"
-        case "Current Process": return "💻 what i'm doing.exe"
-        case "Settings": return "🎀 settings"
-        case "Statistics": return "🏆 my stats"
-        case "Record": return "📁 record & teach"
-        default: return "✦ \(title.lowercased())"
-        }
-    }
-}
-
 /// Pixel-art look: flat colours, hard edges, no gradients/blur/soft shadows (cheap to draw).
 enum Pix {
     static let ink = Color(red: 0.24, green: 0.17, blue: 0.33)          // dark plum outline
     static let paper = Color(red: 1.00, green: 0.97, blue: 0.99)
     static let bg = Color(red: 0.98, green: 0.90, blue: 0.95)           // flat pastel pink
     static let dot = Color(red: 0.93, green: 0.80, blue: 0.90)
+    static let accent = Color(red: 1.00, green: 0.45, blue: 0.70)       // bubblegum pink
+    static let mint = Color(red: 0.55, green: 0.88, blue: 0.75)
+    static let sky = Color(red: 0.62, green: 0.85, blue: 1.00)
+    static let lemon = Color(red: 1.00, green: 0.93, blue: 0.62)
+    static let muted = Color(red: 0.55, green: 0.47, blue: 0.66)
     static let font = Font.system(size: 11, weight: .semibold, design: .monospaced)
     static func font(_ size: CGFloat, _ w: Font.Weight = .bold) -> Font { .system(size: size, weight: w, design: .monospaced) }
+    static let rainbow: [Color] = [Color(red: 1, green: 0.62, blue: 0.75), Color(red: 1, green: 0.78, blue: 0.62),
+                                   Color(red: 1, green: 0.93, blue: 0.62), Color(red: 0.70, green: 0.92, blue: 0.70),
+                                   Color(red: 0.62, green: 0.85, blue: 1.00), Color(red: 0.75, green: 0.70, blue: 1.00)]
+    /// Each window gets its own flat candy colour (units cycle pink, mint, lavender, blue, peach, lemon).
+    static let candy: [Color] = [Color(red: 1.00, green: 0.80, blue: 0.89), Color(red: 0.76, green: 0.95, blue: 0.87),
+                                 Color(red: 0.87, green: 0.82, blue: 1.00), Color(red: 0.80, green: 0.89, blue: 1.00),
+                                 Color(red: 1.00, green: 0.87, blue: 0.80), Color(red: 1.00, green: 0.95, blue: 0.76)]
 }
 
-/// Flat pastel background with a sparse pixel dot pattern (drawn once, off the main thread).
+/// Flat pastel background with a sparse pixel dot pattern. One 24×24 tile drawn ONCE and
+/// repeated by the GPU — nothing is redrawn when the panel updates.
 private struct PastelGrid: View {
-    var body: some View {
-        ZStack {
-            Pix.bg
-            Canvas(rendersAsynchronously: true) { ctx, size in
-                var y: CGFloat = 6
-                var row = 0
-                while y < size.height {
-                    var x: CGFloat = row % 2 == 0 ? 6 : 18
-                    while x < size.width { ctx.fill(Path(CGRect(x: x, y: y, width: 2, height: 2)), with: .color(Pix.dot)); x += 24 }
-                    y += 12; row += 1
-                }
-            }
+    static let tile: NSImage = {
+        NSImage(size: NSSize(width: 24, height: 24), flipped: false) { rect in
+            NSColor(Pix.bg).setFill(); rect.fill()
+            NSColor(Pix.dot).setFill()
+            NSRect(x: 6, y: 6, width: 2, height: 2).fill()
+            NSRect(x: 18, y: 18, width: 2, height: 2).fill()
+            return true
         }
-    }
+    }()
+    var body: some View { Image(nsImage: Self.tile).resizable(resizingMode: .tile) }
 }
 
-/// A chunky pixel box: 2 px dark outline, light top-left bevel, dark bottom-right bevel.
+/// A chunky pixel box: 2 px dark outline, light top-left bevel, dark bottom-right bevel,
+/// hard 3 px drop shadow. Drawn with four rectangles — no shadows, no blur.
 struct PixelBox: ViewModifier {
     var fill: Color
     var pressed = false
@@ -188,26 +157,18 @@ struct PixelBox: ViewModifier {
                 ZStack {
                     Rectangle().fill(Pix.ink)
                     Rectangle().fill(fill).padding(2)
-                    // bevel
                     VStack(spacing: 0) {
                         Rectangle().fill(.white.opacity(pressed ? 0 : 0.75)).frame(height: 2)
-                        Spacer(minLength: 0)
-                    }.padding(2)
-                    HStack(spacing: 0) {
-                        Rectangle().fill(.white.opacity(pressed ? 0 : 0.75)).frame(width: 2)
-                        Spacer(minLength: 0)
-                    }.padding(2)
-                    VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         Rectangle().fill(Pix.ink.opacity(pressed ? 0.05 : 0.22)).frame(height: 2)
                     }.padding(2)
                     HStack(spacing: 0) {
+                        Rectangle().fill(.white.opacity(pressed ? 0 : 0.75)).frame(width: 2)
                         Spacer(minLength: 0)
                         Rectangle().fill(Pix.ink.opacity(pressed ? 0.05 : 0.22)).frame(width: 2)
                     }.padding(2)
                 }
             )
-            // hard 2 px drop shadow, the classic pixel-UI look
             .background(Rectangle().fill(Pix.ink.opacity(0.35)).offset(x: 3, y: 3))
     }
 }
@@ -216,7 +177,23 @@ extension View {
     func pixelBox(_ fill: Color, pressed: Bool = false) -> some View { modifier(PixelBox(fill: fill, pressed: pressed)) }
 }
 
-/// Segmented pixel health bar.
+/// A pixel push button.
+struct PixelButton: View {
+    let title: String
+    var fill: Color = Pix.candy[0]
+    var size: CGFloat = 11
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(Pix.font(size, .black)).foregroundStyle(Pix.ink)
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .pixelBox(fill)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Segmented pixel bar (win rate, progress).
 struct RainbowBar: View {
     var value: Double          // 0…1
     var segments = 12
@@ -224,7 +201,7 @@ struct RainbowBar: View {
         HStack(spacing: 1) {
             ForEach(0..<segments, id: \.self) { i in
                 Rectangle()
-                    .fill(Double(i) < value * Double(segments) ? Theme.rainbow[i * Theme.rainbow.count / segments] : Pix.paper)
+                    .fill(Double(i) < value * Double(segments) ? Pix.rainbow[i * Pix.rainbow.count / segments] : Pix.paper)
                     .frame(height: 8)
             }
         }
@@ -233,19 +210,18 @@ struct RainbowBar: View {
     }
 }
 
-/// Each window gets its own flat candy colour (units cycle pink, mint, lavender, blue, peach, lemon).
-private func jellyTint(for title: String) -> Color {
-    let palette: [Color] = [Color(red: 1.00, green: 0.80, blue: 0.89), Color(red: 0.76, green: 0.95, blue: 0.87),
-                            Color(red: 0.87, green: 0.82, blue: 1.00), Color(red: 0.80, green: 0.89, blue: 1.00),
-                            Color(red: 1.00, green: 0.87, blue: 0.80), Color(red: 1.00, green: 0.95, blue: 0.76)]
-    if title.hasPrefix("Unit "), let n = Int(title.dropFirst(5)) { return palette[(n - 1) % palette.count] }
+private func windowTitle(_ title: String) -> (text: String, tint: Color) {
+    if title.hasPrefix("Unit "), let n = Int(title.dropFirst(5)) {
+        let icons = ["🌸", "🍓", "🍡", "🧁", "🍑", "⭐️"]
+        return ("\(icons[(n - 1) % icons.count]) unit \(n)", Pix.candy[(n - 1) % Pix.candy.count])
+    }
     switch title {
-    case "Auto placement": return palette[2]
-    case "Current Process": return palette[3]
-    case "Settings": return palette[0]
-    case "Statistics": return palette[1]
-    case "Record": return palette[4]
-    default: return palette[2]
+    case "Auto placement": return ("🪄 auto placement", Pix.candy[2])
+    case "Current Process": return ("💻 what i'm doing.exe", Pix.candy[3])
+    case "Settings": return ("🎀 settings", Pix.candy[0])
+    case "Statistics": return ("🏆 my stats", Pix.candy[1])
+    case "Record": return ("📁 record & teach", Pix.candy[4])
+    default: return ("✦ \(title.lowercased())", Pix.candy[2])
     }
 }
 
@@ -253,19 +229,20 @@ private struct FrameSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
-        let tint = jellyTint(for: title)
+        let t = windowTitle(title)
         VStack(alignment: .leading, spacing: 0) {
-            // solid title strip
             HStack(spacing: 4) {
-                Text(Theme.decorate(title)).font(Pix.font(10.5, .heavy)).foregroundStyle(Pix.ink).lineLimit(1)
+                Text(t.text).font(Pix.font(10.5, .heavy)).foregroundStyle(Pix.ink).lineLimit(1)
                 Spacer(minLength: 2)
-                HStack(spacing: 2) {      // tiny pixel window buttons
-                    ForEach(0..<3, id: \.self) { _ in Rectangle().fill(Pix.paper).frame(width: 7, height: 7)
-                        .overlay(Rectangle().strokeBorder(Pix.ink, lineWidth: 1.5)) }
+                HStack(spacing: 2) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Rectangle().fill(Pix.paper).frame(width: 7, height: 7)
+                            .overlay(Rectangle().strokeBorder(Pix.ink, lineWidth: 1.5))
+                    }
                 }
             }
             .padding(.horizontal, 6).padding(.vertical, 3)
-            .background(tint)
+            .background(t.tint)
             .overlay(alignment: .bottom) { Rectangle().fill(Pix.ink).frame(height: 2) }
             VStack(alignment: .leading, spacing: 4) { content }
                 .padding(7)
@@ -286,7 +263,7 @@ private struct FramePanel<Content: View>: View {
             .overlay(Rectangle().strokeBorder(Pix.ink, lineWidth: 2))
             .font(Pix.font)
             .foregroundStyle(Pix.ink)
-            .tint(Color(red: 1.0, green: 0.45, blue: 0.70))
+            .tint(Pix.accent)
             .environment(\.colorScheme, .light)
     }
 }
@@ -300,7 +277,7 @@ struct FrameTopBar: View {
     @State private var screen = Permissions.screenRecording
     @State private var access = Permissions.accessibility
     @State private var roblox = WindowManager.robloxFrame() != nil
-    private static let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private static let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var running: Bool { engine.state != .idle }
 
@@ -316,21 +293,7 @@ struct FrameTopBar: View {
                 }
                 .labelsHidden().controlSize(.small).fixedSize().disabled(running)
                 .help("What to farm. More modes (Story, Infinite…) can be added later.")
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
-                    Image(systemName: "chevron.right")
-                    Image(systemName: "arrow.clockwise")
-                }
-                .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.outline)
-                HStack(spacing: 4) {
-                    Text("☆").foregroundStyle(Theme.accent)
-                    Text(running ? "welcome to aa macro ♡ — \(engine.state.rawValue)" : (recorder.isRecording ? "recording…" : "welcome to aa macro ♡ — napping 💤"))
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced)).lineLimit(1)
-                }
-                .padding(.horizontal, 10).padding(.vertical, 3)
-                .frame(minWidth: 220, alignment: .leading)
-                .background(Capsule().fill(Color.white.opacity(0.85)))
-                .overlay(Capsule().stroke(Theme.outline, lineWidth: 1.2))
+                LoopTrack(state: engine.state, recording: recorder.isRecording)
                 Spacer()
                 check("Screen", screen); check("Access", access); check("Roblox", roblox)
                 if !(screen && access) {
@@ -340,16 +303,11 @@ struct FrameTopBar: View {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
                     }.controlSize(.mini)
                 }
-                Button {
+                PixelButton(title: running ? "■ STOP (F6)" : "▶ START",
+                            fill: running ? Color(red: 1.0, green: 0.70, blue: 0.72) : Color(red: 1.0, green: 0.78, blue: 0.90),
+                            size: 12) {
                     if running { engine.stop() } else { engine.start() }
-                } label: {
-                    Text(running ? "■ STOP (F6)" : "▶ START")
-                        .font(Pix.font(12, .black))
-                        .foregroundStyle(Pix.ink)
-                        .padding(.horizontal, 12).padding(.vertical, 4)
-                        .pixelBox(running ? Color(red: 1.0, green: 0.70, blue: 0.72) : Color(red: 1.0, green: 0.78, blue: 0.90))
                 }
-                .buttonStyle(.plain)
                 .disabled(recorder.isRecording)
                 Button("Camera") { engine.testCamera() }.controlSize(.small).disabled(running)
                     .help("Test: zoom fully out and tilt top-down")
@@ -369,9 +327,45 @@ struct FrameTopBar: View {
 
     private func check(_ name: String, _ ok: Bool) -> some View {
         HStack(spacing: 3) {
-            Image(systemName: ok ? "heart.fill" : "heart.slash.fill").foregroundStyle(ok ? Theme.accent : .gray)
+            Image(systemName: ok ? "heart.fill" : "heart.slash.fill").foregroundStyle(ok ? Pix.accent : .gray)
             Text(name).foregroundStyle(.secondary)
         }.font(.system(size: 10, design: .monospaced))
+    }
+}
+
+/// The farming loop as a row of pixel chips, the current step lit up:
+///   lobby ▸ pad ▸ code ▸ vote ▸ play ▸ results
+struct LoopTrack: View {
+    let state: MacroEngine.State
+    var recording = false
+
+    private static let steps: [(MacroEngine.State, String)] = [
+        (.lobby, "lobby"), (.walkToEvent, "pad"), (.matchmaking, "code"), (.loadingStage, "vote"),
+        (.playStage, "play"), (.results, "results"),
+    ]
+    private var current: MacroEngine.State { state == .enterCode ? .matchmaking : state }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if state == .idle {
+                chip(recording ? "● recording" : "zzz napping", lit: recording, color: recording ? Pix.candy[0] : Pix.paper)
+            } else if state == .recovering {
+                chip("⚠ recovering…", lit: true, color: Pix.lemon)
+            } else {
+                ForEach(Self.steps, id: \.1) { step in
+                    chip(step.1, lit: step.0 == current, color: step.0 == current ? Pix.mint : Pix.paper)
+                    if step.1 != "results" { Text("▸").font(Pix.font(8, .black)).foregroundStyle(Pix.muted) }
+                }
+            }
+        }
+    }
+
+    private func chip(_ text: String, lit: Bool, color: Color) -> some View {
+        Text(text)
+            .font(Pix.font(9.5, lit ? .black : .semibold))
+            .foregroundStyle(lit ? Pix.ink : Pix.muted)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .pixelBox(color, pressed: !lit)
     }
 }
 
@@ -385,22 +379,20 @@ struct FrameRightColumn: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("🎀 My Team 🎀").font(.system(size: 15, weight: .black, design: .monospaced))
-                        .foregroundStyle(Theme.title).frame(maxWidth: .infinity)
+                        .foregroundStyle(Pix.ink).frame(maxWidth: .infinity)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible())], spacing: 6) {
                         ForEach(1...6, id: \.self) { UnitCard(slot: $0) }
                     }
                     FrameSection(title: "Auto placement") {
-                        Toggle("Auto on maps without a recording", isOn: $store.settings.autoWhenNoRecording)
-                        Toggle("Always use auto", isOn: $store.settings.preferAuto)
-                        Toggle("Save winning layouts", isOn: $store.settings.autoSaveWins)
                         Toggle("Learn unscanned maps while playing", isOn: $store.settings.learnWhilePlaying)
                             .help("Once the team is placed, scan the map mid-match and save it for next time.")
                         Toggle("Teach mode (I place units on new maps)", isOn: $store.settings.teachMode)
+                            .help("On a map you haven't taught yet, you place the units yourself; the macro saves where each slot went. Maps already taught play automatically. Turn off before sleeping.")
                         Toggle("   …only ask me for hill units", isOn: $store.settings.teachHillsOnly)
                             .disabled(!store.settings.teachMode)
                             .help("Ground units are placed automatically (they already do well); you only place the hill units once per map.")
-                            .help("On a map you haven't taught yet, you place the units yourself and pick cards; the macro saves where each slot went. Maps already taught play automatically. Turn off before sleeping.")
-                        Text("Taught maps: \(store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", ").isEmpty ? "none yet" : store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted().joined(separator: ", "))")
+                        let taught = store.profiles.filter { !($0.taught ?? []).isEmpty }.map(\.name).sorted()
+                        Text("Taught maps: \(taught.isEmpty ? "none yet" : taught.joined(separator: ", "))")
                             .font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                         HStack {
                             Text("Place order")
@@ -466,7 +458,7 @@ struct UnitCard: View {
             .toggleStyle(.checkbox)
             .help("The game won't let you sell this unit — scans never test-place with it.")
             if let rank = store.settings.prioritySlots.firstIndex(of: slot) {
-                Text("upgrade order #\(rank + 1)").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.accent)
+                Text("upgrade order #\(rank + 1)").font(.system(size: 9, design: .monospaced)).foregroundStyle(Pix.accent)
             }
             HStack(spacing: 2) {
                 Text("Max upgrade").foregroundStyle(.secondary)
@@ -507,43 +499,71 @@ struct UnitCard: View {
 }
 
 // MARK: - Bottom strip
+//
+// Four windows, each watching only what it needs: a new log line redraws the log window and
+// nothing else; the clock ticks only inside the stats window.
 
 struct FrameBottomStrip: View {
     @EnvironmentObject var engine: MacroEngine
-    @EnvironmentObject var recorder: Recorder
-    @EnvironmentObject var store: Store
-    @State private var mapName = ""
-    @State private var now = Date()
-    private static let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         FramePanel {
             HStack(spacing: 6) {
-                FrameSection(title: "Current Process") {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(Array(engine.log.suffix(60).enumerated()), id: \.offset) { i, line in
-                                    Text(line).font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(line.contains("⚠️") ? Color.orange : (line.contains("✓") ? Color(red: 0.2, green: 0.6, blue: 0.45) : Color(red: 0.33, green: 0.24, blue: 0.40)))
-                                        .lineLimit(1).id(i)
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .onChange(of: engine.log.count) { _, _ in proxy.scrollTo(min(59, max(0, engine.log.count - 1))) }
-                    }
-                }
-                .frame(minWidth: 300)
+                ProcessLogBox(journal: engine.journal).frame(minWidth: 300)
+                SettingsBox().controlSize(.mini)
+                StatsBox()
+                RecordBox().controlSize(.small)
+            }
+            .padding(6)
+        }
+    }
+}
 
-                FrameSection(title: "Settings") {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 3) {
+/// The live log. Watches the journal only.
+private struct ProcessLogBox: View {
+    @ObservedObject var journal: MacroJournal
+
+    var body: some View {
+        FrameSection(title: "Current Process") {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(journal.lines.suffix(80)) { line in
+                            Text(line.text).font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(color(line.kind))
+                                .lineLimit(1).id(line.id)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onChange(of: journal.lines.last?.id) { _, id in if let id { proxy.scrollTo(id) } }
+            }
+        }
+    }
+
+    private func color(_ k: LogLine.Kind) -> Color {
+        switch k {
+        case .warn:  return .orange
+        case .good:  return Color(red: 0.2, green: 0.6, blue: 0.45)
+        case .teach: return Color(red: 0.55, green: 0.35, blue: 0.80)
+        case .info:  return Color(red: 0.33, green: 0.24, blue: 0.40)
+        }
+    }
+}
+
+private struct SettingsBox: View {
+    @EnvironmentObject var store: Store
+    @EnvironmentObject var engine: MacroEngine
+
+    var body: some View {
+        FrameSection(title: "Settings") {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text("Discord").foregroundStyle(.secondary)
                         SecureField("webhook URL (alerts)", text: $store.settings.discordWebhook).textFieldStyle(.roundedBorder)
-                        Button("Test") {
-                            Discord.send("💖 AA Macro test message — Discord alerts are working!", webhook: store.settings.discordWebhook)
-                        }.controlSize(.mini).disabled(store.settings.discordWebhook.isEmpty)
+                        Button("Test") { engine.testDiscord() }
+                            .controlSize(.mini).disabled(store.settings.discordWebhook.isEmpty)
+                            .help("Sends a test message and says in the log whether Discord actually accepted it.")
                     }
                     HStack {
                         Text("Upgrade key").foregroundStyle(.secondary)
@@ -562,36 +582,92 @@ struct FrameBottomStrip: View {
                     Toggle("Camera: zoom out + top-down", isOn: $store.settings.cameraReset).toggleStyle(.checkbox)
                     Toggle("Tilt by dragging down", isOn: $store.settings.cameraTiltDown).toggleStyle(.checkbox)
                         .help("Flip this if the camera ends up looking at the sky")
-                                        }
-                    }
+                    Toggle("Game auto-skips card votes", isOn: $store.settings.cardsAutoSkipped).toggleStyle(.checkbox)
+                        .help("Leave on while the game's own Auto-skip card votes setting is on: the macro then never spends time reading the card screen. Turn off if a card vote ever sits there unanswered.")
                 }
-                .controlSize(.mini)
+            }
+        }
+    }
+}
 
-                FrameSection(title: "Statistics") {
-                    stat("Map", engine.currentMap.isEmpty ? "—" : engine.currentMap)
-                    stat("Runs", "\(engine.runsCompleted)")
-                    stat("Wins / Losses", "\(engine.wins) / \(engine.losses)")
-                    HStack(spacing: 6) {
-                        Text("win rate").foregroundStyle(.secondary)
-                        RainbowBar(value: engine.wins + engine.losses == 0 ? 0 : Double(engine.wins) / Double(engine.wins + engine.losses))
-                        Text(engine.wins + engine.losses == 0 ? "—" : "\(engine.wins * 100 / max(1, engine.wins + engine.losses))%")
-                            .monospaced().font(.system(size: 10))
-                    }
-                    stat("Running for", elapsed)
-                    stat("Summer Pearls", "\(engine.sessionPearls)")
-                    stat("Pearls / hour", {
-                        guard let st = engine.startedAt else { return "—" }
-                        let h = Date().timeIntervalSince(st) / 3600
-                        return h < 0.05 ? "—" : "\(Int(Double(engine.sessionPearls) / h))"
-                    }())
-                    stat("✦ Secrets", engine.sessionSecrets == 0 ? "none yet" : "\(engine.sessionSecrets) ✦")
-                    stat("Maps recorded", "\(store.maps.filter { !$0.name.hasPrefix("_") }.count)")
-                    stat("Maps scanned", "\(store.profiles.count)")
-                }
+/// Session numbers big, lifetime numbers small. Only this window ticks every second.
+private struct StatsBox: View {
+    @EnvironmentObject var engine: MacroEngine
+    @EnvironmentObject var store: Store
+    @State private var now = Date()
+    private static let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-                FrameSection(title: "Record") {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
+    var body: some View {
+        FrameSection(title: "Statistics") {
+            HStack(spacing: 4) {
+                tile("runs", "\(engine.runsCompleted)", Pix.candy[3])
+                tile("wins", "\(engine.wins)", Pix.candy[1])
+                tile("losses", engine.unknowns > 0 ? "\(engine.losses)+\(engine.unknowns)?" : "\(engine.losses)", Pix.candy[0])
+                tile("pearls", short(engine.sessionPearls), Pix.candy[5])
+                tile("pearls/h", pearlsPerHour, Pix.candy[2])
+                tile("✦ secrets", "\(engine.sessionSecrets)", Pix.candy[4])
+            }
+            HStack(spacing: 6) {
+                Text("win rate").foregroundStyle(.secondary)
+                RainbowBar(value: engine.wins + engine.losses == 0 ? 0 : Double(engine.wins) / Double(engine.wins + engine.losses))
+                Text(engine.wins + engine.losses == 0 ? "—" : "\(engine.wins * 100 / max(1, engine.wins + engine.losses))%")
+                    .monospaced().font(.system(size: 10))
+            }
+            row("map", engine.currentMap.isEmpty ? "—" : engine.currentMap)
+            row("running for", elapsed)
+            Rectangle().fill(Pix.ink.opacity(0.25)).frame(height: 1).padding(.vertical, 2)
+            let s = store.stats
+            Text("all time · since \(s.since.formatted(.dateTime.month(.abbreviated).day()))")
+                .font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(.secondary)
+            row("runs", "\(s.runs)  (\(s.wins)W / \(s.losses)L\(s.unknown > 0 ? " / \(s.unknown)?" : ""))")
+            row("win rate", s.wins + s.losses == 0 ? "—" : "\(Int(s.winRate * 100))%")
+            row("pearls", short(s.pearls) + (s.pearlsPerHour > 0 ? "  (\(short(s.pearlsPerHour))/h)" : ""))
+            row("✦ secrets · hours", "\(s.secrets) · \(String(format: "%.1f", s.seconds / 3600))")
+        }
+        .onReceive(Self.tick) { now = $0 }
+    }
+
+    private var pearlsPerHour: String {
+        guard let st = engine.startedAt else { return "—" }
+        let h = now.timeIntervalSince(st) / 3600
+        return h < 0.05 ? "—" : short(Int(Double(engine.sessionPearls) / h))
+    }
+
+    private var elapsed: String {
+        guard let s = engine.startedAt else { return "—" }
+        let t = Int(now.timeIntervalSince(s))
+        return String(format: "%d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60)
+    }
+
+    private func short(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 10_000 ? String(format: "%.1fk", Double(n) / 1e3) : "\(n)"
+    }
+
+    private func tile(_ label: String, _ value: String, _ color: Color) -> some View {
+        VStack(spacing: 1) {
+            Text(value).font(Pix.font(13, .black)).lineLimit(1).minimumScaleFactor(0.6)
+            Text(label).font(Pix.font(8, .semibold)).foregroundStyle(Pix.muted)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 3).padding(.horizontal, 2)
+        .pixelBox(color)
+    }
+
+    private func row(_ k: String, _ v: String) -> some View {
+        HStack { Text(k).foregroundStyle(.secondary); Spacer(); Text(v).monospaced().lineLimit(1) }
+            .font(.system(size: 10, design: .monospaced))
+    }
+}
+
+private struct RecordBox: View {
+    @EnvironmentObject var engine: MacroEngine
+    @EnvironmentObject var recorder: Recorder
+    @EnvironmentObject var store: Store
+    @State private var mapName = ""
+
+    var body: some View {
+        FrameSection(title: "Record") {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
                     TextField("Map name", text: $mapName).textFieldStyle(.roundedBorder)
                     if store.settings.mode == .portal {
                         // ── Portal tools (only in Portal mode) ──
@@ -611,15 +687,17 @@ struct FrameBottomStrip: View {
                                 .disabled(engine.walkRecording)
                                 .help("Replays the saved walk for this map from spawn, then lines up with the saved end view.")
                         }
+                    } else if store.settings.mode == .dungeon {
+                        // ── Dungeon tools (only in Dungeon mode): watch and learn, no input sent ──
+                        Button(engine.dungeonWatching ? "Stop & save run" : "Watch my dungeon") { engine.toggleDungeonWatch() }
+                            .tint(engine.dungeonWatching ? .red : .purple).buttonStyle(.borderedProminent)
+                            .disabled(engine.state != .idle)
+                            .help("Press before you start a dungeon, then play it yourself. Every tile, shop and relic choice and every match's walk, placements and upgrades are saved to the dungeon folder. Press again (or F6) when the run ends.")
+                        Text(engine.dungeonStatus)
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.purple).lineLimit(3)
+                            .onAppear { engine.refreshDungeonStatus() }
                     } else {
                         // ── Summer Hunt tools ──
-                        Button(recorder.isRecording ? "Stop & save" : "Record map") {
-                            if recorder.isRecording { recorder.stop() } else if !mapName.isEmpty { recorder.start(mapName: mapName) }
-                        }
-                        .tint(recorder.isRecording ? .red : Theme.accent).buttonStyle(.borderedProminent)
-                        .disabled(engine.state != .idle)
-                        Text(recorder.isRecording ? "\(recorder.actions.count) steps" : "Start during the vote screen")
-                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(recorder.isRecording ? .red : .secondary)
                         Button(engine.scanning ? "Stop scan" : "Scan map") {
                             if engine.scanning { engine.stop() } else { engine.scanMap(name: mapName) }
                         }
@@ -634,111 +712,176 @@ struct FrameBottomStrip: View {
                             .disabled(engine.state != .idle || recorder.isRecording || engine.scanning)
                             .help("In a stage on a scanned map: places each unit on its saved spots (middle of the map first) and reports how many spots were good.")
                     }
-                    Text(engine.scanning ? engine.scanProgress : "\(store.profiles.count) maps scanned")
+                    Text(engine.scanning ? engine.scanProgress : "\(store.profiles.count) maps known")
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(engine.scanning ? .teal : .secondary).lineLimit(2)
-                                        }
-                    }
                 }
-                .controlSize(.small)
             }
-            .padding(6)
         }
-        .onReceive(Self.tick) { now = $0 }
-    }
-
-    private var elapsed: String {
-        guard let s = engine.startedAt else { return "—" }
-        let t = Int(now.timeIntervalSince(s))
-        return String(format: "%d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60)
-    }
-
-    private func stat(_ k: String, _ v: String) -> some View {
-        HStack { Text(k).foregroundStyle(.secondary); Spacer(); Text(v).monospaced().lineLimit(1) }
     }
 }
 
+// MARK: - Mochi — the pixel slime companion in the top bar
 
-// MARK: - Mochi ♡ — the pixel slime companion in the top bar
+/// A horizontal strip of square frames (64x64 each), drawn one frame at a time.
+/// Sheets live in Resources/ as slime-<mood>.png. A mood whose sheet hasn't been drawn yet
+/// falls back to the still icon, so new art lights up just by being dropped in the folder.
+enum MochiSheet {
+    struct Strip { let frames: [CGImage]; let fps: Double }
 
-/// Your slime sprite (the app icon), drawn crisp at 2×, with a 4-fps bob and little pixel extras:
-/// "z" while asleep, sparkles + hearts after a win, a tear after a loss, "?" when worried.
+    private static var cache: [String: Strip?] = [:]
+
+    static func named(_ name: String, fps: Double) -> Strip? {
+        if let hit = cache[name] { return hit }          // nil results are cached too
+        let strip = slice(name, fps: fps)
+        cache[name] = strip
+        return strip
+    }
+
+    /// The still app icon, for any mood with no sheet.
+    static let still: CGImage? = load("slime") ?? load("AppIcon")
+
+    private static func slice(_ name: String, fps: Double) -> Strip? {
+        guard let img = load(name) else { return nil }
+        let h = img.height
+        guard h > 0, img.width >= h, img.width % h == 0 else { return nil }
+        let frames = (0..<(img.width / h)).compactMap {
+            img.cropping(to: CGRect(x: $0 * h, y: 0, width: h, height: h))
+        }
+        return frames.isEmpty ? nil : Strip(frames: frames, fps: fps)
+    }
+
+    private static func load(_ name: String) -> CGImage? {
+        var urls: [URL] = []
+        if let u = Bundle.main.url(forResource: name, withExtension: "png") { urls.append(u) }
+        urls.append(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop/AAMacro/Resources/\(name).png"))
+        for u in urls {
+            if let i = NSImage(contentsOf: u)?.cgImage(forProposedRect: nil, context: nil, hints: nil) { return i }
+        }
+        return nil
+    }
+}
+
+/// Your slime, played from a sprite sheet. He naps while the macro farms — the same way you do —
+/// wakes up for a win, a loss or trouble, and is awake and waiting whenever it's stopped.
 struct Mochi: View {
     @ObservedObject var engine: MacroEngine
-    @State private var mood: Mood = .sleepy
+    @State private var mood: Mood = .awake
     @State private var moodUntil = Date.distantPast
     @State private var seenWins = -1
     @State private var seenLosses = -1
+    @State private var seenSecrets = -1
 
-    enum Mood { case sleepy, happy, party, sad, worried }
+    /// 32 would be pixel-exact on a Retina display, but the top bar is only 34pt tall.
+    private static let size: CGFloat = 28
 
-    static let sprite: NSImage? = {
-        if let u = Bundle.main.url(forResource: "slime", withExtension: "png"), let i = NSImage(contentsOf: u) { return i }
-        let dev = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/AAMacro/Resources/AppIcon.png")
-        return NSImage(contentsOf: dev)
-    }()
+    enum Mood {
+        case awake, napping, win, lose, worried, secret
 
-    private var line: String {
-        switch mood {
-        case .sleepy:  return "zzz… すやすや"
-        case .happy:   return "がんばるぞ〜!"
-        case .party:   return "やった〜!! WIN ♥"
-        case .sad:     return "うぅ… next time!"
-        case .worried: return "あれれ…?"
+        /// Which sheet plays, and how fast.
+        var sheet: (name: String, fps: Double) {
+            switch self {
+            case .awake:   return ("slime-awake", 2)
+            case .napping: return ("slime-sleep", 3)     // 15 frames = one 5-second breath
+            case .win:     return ("slime-win", 8)
+            case .lose:    return ("slime-lose", 4)
+            case .worried: return ("slime-worried", 5)
+            case .secret:  return ("slime-secret", 8)
+            }
+        }
+
+        var line: String {
+            switch self {
+            case .awake:   return "がんばるぞ〜!"
+            case .napping: return "zzz… すやすや"
+            case .win:     return "やった〜!! WIN ♥"
+            case .lose:    return "うぅ… next time!"
+            case .worried: return "あれれ…?"
+            case .secret:  return "✦ SECRET ✦ すごい!!"
+            }
         }
     }
 
+    private var strip: MochiSheet.Strip? {
+        let s = mood.sheet
+        return MochiSheet.named(s.name, fps: s.fps)
+    }
+
     var body: some View {
+        let sheet = strip
+        let period = 1 / (sheet?.fps ?? 2)
         HStack(spacing: 5) {
-            TimelineView(.periodic(from: .now, by: mood == .sleepy ? 0.8 : 0.25)) { tl in
-                let frame = Int(tl.date.timeIntervalSinceReferenceDate / (mood == .sleepy ? 0.8 : 0.25))
-                let hop: CGFloat = mood == .party ? (frame % 2 == 0 ? -3 : 0) : (frame % 4 < 2 ? 0 : -1)
+            TimelineView(.periodic(from: .now, by: period)) { tl in
+                let tick = Int(tl.date.timeIntervalSinceReferenceDate / period)
                 ZStack {
-                    if let img = Self.sprite {
-                        Image(nsImage: img).resizable().interpolation(.none).frame(width: 26, height: 26)
+                    if let sheet {
+                        // The sheet carries its own z's, sparkles and tears — no overlays needed.
+                        Image(decorative: sheet.frames[abs(tick) % sheet.frames.count], scale: 1)
+                            .resizable().interpolation(.none)
+                            .frame(width: Self.size, height: Self.size)
+                    } else if let still = MochiSheet.still {
+                        Image(decorative: still, scale: 1)
+                            .resizable().interpolation(.none)
+                            .frame(width: Self.size - 4, height: Self.size - 4)
+                            .offset(y: abs(tick) % 4 < 2 ? 0 : -1)
+                        extra(abs(tick))                  // stand-in until this mood has a sheet
                     } else {
                         Rectangle().fill(Color(red: 1.0, green: 0.55, blue: 0.80)).frame(width: 18, height: 14)
                     }
-                    extra(frame: frame)
                 }
-                .offset(y: hop)
-                .frame(width: 30, height: 28)
+                .frame(width: Self.size + 2, height: Self.size)
             }
-            Text(line)
+            Text(mood.line)
                 .font(Pix.font(9.5, .bold))
                 .foregroundStyle(Pix.ink)
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .pixelBox(Pix.paper)
                 .fixedSize()
         }
-        .onAppear { seenWins = engine.wins; seenLosses = engine.losses; update() }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in update() }
-        .help("Mochi ♡")
+        .onAppear {
+            seenWins = engine.wins; seenLosses = engine.losses; seenSecrets = engine.sessionSecrets
+            update()
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in update() }
+        .help("Mochi")
     }
 
-    @ViewBuilder private func extra(frame: Int) -> some View {
+    /// Pixel extras drawn over the still icon for moods whose sheet isn't drawn yet.
+    @ViewBuilder private func extra(_ tick: Int) -> some View {
         switch mood {
-        case .sleepy:
-            Text(frame % 2 == 0 ? "z" : "Z").font(Pix.font(8, .black)).foregroundStyle(Color(red: 0.45, green: 0.38, blue: 0.80))
-                .offset(x: 13, y: frame % 2 == 0 ? -10 : -13)
-        case .party:
-            Text("✦").font(.system(size: 8)).foregroundStyle(.yellow).offset(x: -13, y: frame % 2 == 0 ? -9 : -11)
-            Text("♥").font(Pix.font(8, .black)).foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.55)).offset(x: 13, y: frame % 2 == 0 ? -11 : -9)
-        case .sad:
-            Rectangle().fill(Color(red: 0.50, green: 0.75, blue: 1.0)).frame(width: 2, height: 3).offset(x: 6, y: CGFloat(frame % 4) * 2)
+        case .napping:
+            Text(tick % 2 == 0 ? "z" : "Z").font(Pix.font(8, .black))
+                .foregroundStyle(Color(red: 0.45, green: 0.38, blue: 0.80))
+                .offset(x: 13, y: tick % 2 == 0 ? -10 : -13)
+        case .win, .secret:
+            Text("✦").font(.system(size: 8)).foregroundStyle(.yellow)
+                .offset(x: -13, y: tick % 2 == 0 ? -9 : -11)
+            Text("♥").font(Pix.font(8, .black))
+                .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.55))
+                .offset(x: 13, y: tick % 2 == 0 ? -11 : -9)
+        case .lose:
+            Rectangle().fill(Color(red: 0.50, green: 0.75, blue: 1.0)).frame(width: 2, height: 3)
+                .offset(x: 6, y: CGFloat(tick % 4) * 2)
         case .worried:
             Text("?").font(Pix.font(9, .black)).foregroundStyle(Pix.ink).offset(x: 13, y: -11)
-        case .happy:
+        case .awake:
             EmptyView()
         }
     }
 
     private func update() {
-        if engine.wins > seenWins, seenWins >= 0 { mood = .party; moodUntil = Date().addingTimeInterval(25) }
-        if engine.losses > seenLosses, seenLosses >= 0 { mood = .sad; moodUntil = Date().addingTimeInterval(25) }
-        seenWins = engine.wins; seenLosses = engine.losses
+        // A reaction interrupts the nap for a while, then he settles back down.
+        if engine.sessionSecrets > seenSecrets, seenSecrets >= 0 {
+            mood = .secret; moodUntil = Date().addingTimeInterval(40)
+        } else if engine.wins > seenWins, seenWins >= 0 {
+            mood = .win; moodUntil = Date().addingTimeInterval(25)
+        } else if engine.losses > seenLosses, seenLosses >= 0 {
+            mood = .lose; moodUntil = Date().addingTimeInterval(25)
+        }
+        seenWins = engine.wins; seenLosses = engine.losses; seenSecrets = engine.sessionSecrets
         if Date() < moodUntil { return }
-        if engine.state == .idle { mood = .sleepy }
-        else if engine.state == .recovering || (engine.log.last?.contains("⚠️") ?? false) { mood = .worried }
-        else { mood = .happy }
+        if engine.state == .idle { mood = .awake }
+        else if engine.state == .recovering || engine.journal.lines.last?.kind == .warn { mood = .worried }
+        else { mood = .napping }        // farming: he sleeps through it, like you
     }
 }

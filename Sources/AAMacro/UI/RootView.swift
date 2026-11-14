@@ -8,7 +8,6 @@ struct RootView: View {
         TabView {
             RunView().tabItem { Label("Run", systemImage: "play.circle") }
             MapDataView().tabItem { Label("Map data", systemImage: "square.grid.3x3") }
-            MapsView().tabItem { Label("Recordings", systemImage: "map") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
@@ -37,91 +36,24 @@ struct RunView: View {
                 Text("State: \(engine.state.rawValue)").monospaced()
                 Spacer()
                 Text("Runs: \(engine.runsCompleted)")
-                Text("Maps recorded: \(store.maps.count)").foregroundStyle(.secondary)
+                Text("Maps known: \(store.profiles.count)").foregroundStyle(.secondary)
             }
             Text("F6 stops everything, anytime.").font(.caption).foregroundStyle(.secondary)
-            ScrollViewReader { proxy in
-                List(engine.log.indices, id: \.self) { i in
-                    Text(engine.log[i]).font(.system(.caption, design: .monospaced)).id(i)
-                }
-                .onChange(of: engine.log.count) { _, n in proxy.scrollTo(n - 1) }
-            }
+            FullLog(journal: engine.journal)
         }
     }
 }
 
-// MARK: - Maps tab: record new maps, edit a recording's action list
-
-struct MapsView: View {
-    @EnvironmentObject var store: Store
-    @EnvironmentObject var recorder: Recorder
-    @State private var newName = ""
-    @State private var selection: MapRecording.ID?
-
+/// The whole log (the dock shows the last 80 lines; this shows everything kept in memory).
+struct FullLog: View {
+    @ObservedObject var journal: MacroJournal
     var body: some View {
-        HSplitView {
-            VStack(alignment: .leading) {
-                List(store.maps, selection: $selection) { m in
-                    VStack(alignment: .leading) {
-                        Text(m.name).bold()
-                        Text("\(m.actions.count) actions · keywords: \(m.keywords.joined(separator: ", "))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                HStack {
-                    TextField("Stage name (e.g. Planet Namak)", text: $newName)
-                    Button(recorder.isRecording ? "Stop & save" : "Record") {
-                        if recorder.isRecording { recorder.stop() }
-                        else if !newName.isEmpty { recorder.start(mapName: newName) }
-                    }
-                    .tint(recorder.isRecording ? .red : .accentColor)
-                }
-                if recorder.isRecording {
-                    Text("Recording… \(recorder.actions.count) actions. Play the map normally; F6 also stops.")
-                        .font(.caption).foregroundStyle(.red)
-                }
+        ScrollViewReader { proxy in
+            List(journal.lines) { line in
+                Text(line.text).font(.system(.caption, design: .monospaced)).id(line.id)
             }
-            .frame(minWidth: 260)
-
-            if let id = selection, let i = store.maps.firstIndex(where: { $0.id == id }) {
-                MapEditor(map: $store.maps[i])
-            } else {
-                Text("Select a map to edit its steps").foregroundStyle(.secondary).frame(maxWidth: .infinity)
-            }
+            .onChange(of: journal.lines.last?.id) { _, id in if let id { proxy.scrollTo(id) } }
         }
-    }
-}
-
-/// Reorder/delete recorded steps and edit recognition keywords.
-struct MapEditor: View {
-    @Binding var map: MapRecording
-    @EnvironmentObject var store: Store
-    @State private var keywords = ""
-
-    var body: some View {
-        VStack(alignment: .leading) {
-            Text(map.name).font(.title2).bold()
-            HStack {
-                TextField("Keywords (comma separated)", text: $keywords)
-                Button("Apply") {
-                    map.keywords = keywords.lowercased().split(separator: ",")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                    store.save(map)
-                }
-            }
-            List {
-                ForEach(map.actions) { a in Text(a.label).monospaced() }
-                    .onMove { map.actions.move(fromOffsets: $0, toOffset: $1); store.save(map) }
-                    .onDelete { map.actions.remove(atOffsets: $0); store.save(map) }
-            }
-            HStack {
-                Button("Add 'wait for wave'") { map.actions.append(.waitForWave(5)); store.save(map) }
-                Spacer()
-                Button("Delete map", role: .destructive) { store.delete(map) }
-            }
-        }
-        .padding(.leading)
-        .onAppear { keywords = map.keywords.joined(separator: ", ") }
     }
 }
 
@@ -157,10 +89,7 @@ struct SettingsView: View {
                 Stepper("Stop after \(store.settings.maxRuns == 0 ? "∞" : String(store.settings.maxRuns)) runs",
                         value: $store.settings.maxRuns, in: 0...500)
             }
-            Section("Auto mode (no recording needed)") {
-                Toggle("Play maps without a recording automatically", isOn: $store.settings.autoWhenNoRecording)
-                Toggle("Use auto mode even when a recording exists", isOn: $store.settings.preferAuto)
-                Toggle("Save winning auto layouts as recordings", isOn: $store.settings.autoSaveWins)
+            Section("Auto placement") {
                 SlotListField(slots: $store.settings.autoPlaceOrder, placeholder: "Placement order, e.g. 6 1 3")
                 Text("e.g. \"1 1 3 2 4\" — a slot can repeat. Priority slots (above) get upgraded first.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -204,8 +133,16 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section("Lifetime stats") {
+                let st = store.stats
+                Text("\(st.runs) runs · \(st.wins)W / \(st.losses)L\(st.unknown > 0 ? " / \(st.unknown) unknown" : "") · \(st.pearls) pearls · \(st.secrets) secrets · \(String(format: "%.1f", st.seconds / 3600)) h since \(st.since.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption)
+                Text("Runs before Nov 10, 2026 were seeded from the log files (pearls weren't logged then).")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Reset lifetime stats", role: .destructive) { store.resetStats() }
+            }
             Section("Folders") {
-                Text("Templates (cropped buttons): \(store.templatesDir.path)").textSelection(.enabled).font(.caption)
+                Text("Data: \(store.root.path)").textSelection(.enabled).font(.caption)
                 Button("Open data folder") { NSWorkspace.shared.open(store.root) }
             }
         }

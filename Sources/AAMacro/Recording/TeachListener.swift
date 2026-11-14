@@ -24,6 +24,9 @@ final class TeachListener {
     private(set) var rightClicksOutside = 0
     /// Index of the next event the engine hasn't processed yet.
     var cursor = 0
+    /// A click on a hotbar card picks that unit (true in a match). The dungeon watcher turns this
+    /// off on menu screens, where a click that low is a menu click.
+    var hotbarClicksSelect = true
 
     func start() {
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.leftMouseDown.rawValue)
@@ -78,7 +81,7 @@ final class TeachListener {
         case .leftMouseDown where pendingSlot == nil:
             guard let p = WindowManager.normalize(location) else { return }
             // Clicking a unit card on the hotbar selects that unit, same as pressing its number key.
-            if p.y > 0.86, let i = Region.hotbarSlotX.firstIndex(where: { abs($0 - p.x) < 0.032 }) {
+            if hotbarClicksSelect, p.y > 0.86, let i = Region.hotbarSlotX.firstIndex(where: { abs($0 - p.x) < 0.032 }) {
                 pendingSlot = i + 1
                 events.append((.slotKey(i + 1), Date()))
                 return

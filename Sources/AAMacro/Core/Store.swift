@@ -11,6 +11,8 @@ import AppKit
 final class Store: ObservableObject {
     @Published var maps: [MapRecording] = []
     @Published var settings = MacroSettings() { didSet { saveSettings() } }
+    /// Totals across every session (stats.json).
+    @Published var stats = LifetimeStats()
 
     let root: URL
     var mapsDir: URL { root.appendingPathComponent("maps") }
@@ -145,6 +147,17 @@ final class Store: ObservableObject {
         let dec = JSONDecoder()
         if let data = try? Data(contentsOf: root.appendingPathComponent("settings.json")),
            let s = try? dec.decode(MacroSettings.self, from: data) { settings = s }
+        if let data = try? Data(contentsOf: root.appendingPathComponent("stats.json")),
+           let st = try? dec.decode(LifetimeStats.self, from: data) {
+            stats = st
+        } else {
+            // First run with lifetime stats: start from what the logs showed (Nov 5–10, 2026).
+            var seed = LifetimeStats()
+            seed.since = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 5)) ?? Date()
+            seed.runs = 131; seed.wins = 89; seed.losses = 42
+            stats = seed
+            saveStats()
+        }
         let files = (try? FileManager.default.contentsOfDirectory(at: mapsDir, includingPropertiesForKeys: nil)) ?? []
         maps = files.filter { $0.pathExtension == "json" }
             .compactMap { try? dec.decode(MapRecording.self, from: Data(contentsOf: $0)) }
@@ -167,6 +180,24 @@ final class Store: ObservableObject {
     func delete(_ map: MapRecording) {
         try? FileManager.default.removeItem(at: mapsDir.appendingPathComponent("\(map.name).json"))
         maps.removeAll { $0.id == map.id }
+    }
+
+    /// Changes the lifetime totals and writes them out.
+    func updateStats(_ change: (inout LifetimeStats) -> Void) {
+        change(&stats)
+        saveStats()
+    }
+
+    func resetStats() {
+        stats = LifetimeStats()
+        saveStats()
+    }
+
+    private func saveStats() {
+        let enc = JSONEncoder(); enc.outputFormatting = .prettyPrinted
+        if let data = try? enc.encode(stats) {
+            try? data.write(to: root.appendingPathComponent("stats.json"), options: .atomic)
+        }
     }
 
     private func saveSettings() {

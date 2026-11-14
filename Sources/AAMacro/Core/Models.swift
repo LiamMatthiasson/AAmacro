@@ -56,6 +56,8 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
     case summerHunt = "Summer Hunt"
     /// Portals: teach/test tools only for now — Start is blocked until the full mode is built.
     case portal = "Portal"
+    /// Dungeons: watch-and-learn only for now (Engine+Dungeon) — Start is blocked.
+    case dungeon = "Dungeon"
     var id: String { rawValue }
 }
 
@@ -137,20 +139,18 @@ struct MacroSettings: Codable {
     /// The only red (bad) effects worth accepting on a debuff card. A debuff card is OK
     /// only if *every* red line on it matches one of these.
     var cardOkDebuffs: [String] = ["enemy health", "enemy speed"]
+    /// The game's own "Auto-skip card votes" setting is on, so the card screen never needs
+    /// reading. Saves a text read every second for the whole match. Turn off if you ever see
+    /// the card screen sit there unanswered.
+    var cardsAutoSkipped: Bool = true
 
-    // MARK: Auto mode (no recording needed)
-    /// Play maps that have no recording with auto-placement.
-    var autoWhenNoRecording: Bool = true
-    /// Use auto-placement even on maps that have a recording.
-    var preferAuto: Bool = false
+    // MARK: Auto placement
     /// Which slot to place next, in order (a slot can repeat). Shared by every map.
     var autoPlaceOrder: [Int] = [1, 2, 3, 4, 5, 6, 1, 2]
     /// Upgrades given to a priority-slot unit right after placing it, before placing the next unit.
     var autoEarlyUpgrades: Int = 2
     /// Unit range as a fraction of window width (rough; fine-tune per unit). Missing = 0.12.
     var autoRangePerSlot: [Int: Double] = [:]
-    /// Save a winning auto layout as that map's recording.
-    var autoSaveWins: Bool = true
     /// Hotbar slots holding hill-only units (they can be placed farther from the lane).
     var hillSlots: [Int] = []
     /// Optional step list ("place 6", "upgrade 6 max", "place 2 x4", "upgrade all max", "wait wave 10").
@@ -210,12 +210,10 @@ extension MacroSettings {
         get(.cardAvoid, &cardAvoid)
         get(.cardBuffExclude, &cardBuffExclude)
         get(.cardOkDebuffs, &cardOkDebuffs)
-        get(.autoWhenNoRecording, &autoWhenNoRecording)
-        get(.preferAuto, &preferAuto)
+        get(.cardsAutoSkipped, &cardsAutoSkipped)
         get(.autoPlaceOrder, &autoPlaceOrder)
         get(.autoEarlyUpgrades, &autoEarlyUpgrades)
         get(.autoRangePerSlot, &autoRangePerSlot)
-        get(.autoSaveWins, &autoSaveWins)
         get(.hillSlots, &hillSlots)
         get(.autoSteps, &autoSteps)
         get(.learnWhilePlaying, &learnWhilePlaying)
@@ -232,5 +230,50 @@ extension MacroSettings {
         get(.lagFactor, &lagFactor)
         get(.stuckMinutes, &stuckMinutes)
         get(.stopAfterLosses, &stopAfterLosses)
+    }
+}
+
+/// How a match ended, as read off the results panel. `unknown` = the panel was there but
+/// neither VICTORY nor DEFEAT could be read; it is counted on its own, never as a loss.
+enum MatchOutcome: String, Codable { case victory, defeat, unknown }
+
+/// Totals across every session, kept in stats.json.
+struct LifetimeStats: Codable {
+    var since: Date = Date()
+    var runs = 0
+    var wins = 0
+    var losses = 0
+    var unknown = 0
+    var pearls = 0
+    var secrets = 0
+    /// Time the macro has been running, in seconds.
+    var seconds: Double = 0
+
+    var winRate: Double { let d = wins + losses; return d == 0 ? 0 : Double(wins) / Double(d) }
+    var pearlsPerHour: Int { seconds < 600 ? 0 : Int(Double(pearls) / (seconds / 3600)) }
+}
+
+/// One line of the live log. The id only ever grows, so the log view can tell new lines from old.
+struct LogLine: Identifiable {
+    let id: Int
+    let text: String
+    enum Kind { case info, good, warn, teach }
+    var kind: Kind {
+        if text.contains("⚠️") { return .warn }
+        if text.contains("🎓") || text.contains("🗺️") { return .teach }
+        if text.contains("✓") || text.contains("VICTORY") { return .good }
+        return .info
+    }
+}
+
+/// The engine's live log, separate from the engine so appending a line redraws only the log
+/// view (every other panel watches the engine, whose state changes far less often).
+@MainActor
+final class MacroJournal: ObservableObject {
+    @Published private(set) var lines: [LogLine] = []
+    private var nextID = 0
+    func add(_ text: String) {
+        lines.append(LogLine(id: nextID, text: text)); nextID += 1
+        if lines.count > 400 { lines.removeFirst(100) }
     }
 }

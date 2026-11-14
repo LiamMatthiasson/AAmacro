@@ -127,7 +127,31 @@ enum Matcher {
 enum OCR {
     struct Line { let text: String; let box: CGRect }   // box is normalized, origin top-left
 
+    // The same frame is often read several times in a row by different checks (cards, end of
+    // match, popups, the wave counter…). Each read is a full Vision pass, so the last few results
+    // are kept and handed back when the SAME image is asked for again with the same region/mode.
+    // Entries hold the image strongly, so a recycled address can never match a different frame.
+    private struct Key: Equatable { let image: ObjectIdentifier; let x, y, w, h: Double; let fast: Bool }
+    private struct Entry { let key: Key; let image: CGImage; let lines: [Line] }
+    private static var cache: [Entry] = []
+    private static let cacheLock = NSLock()
+    private static let cacheSize = 8
+
     static func read(_ image: CGImage, region: CGRect? = nil, fast: Bool = false) throws -> [Line] {
+        let r = region ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+        let key = Key(image: ObjectIdentifier(image), x: r.minX, y: r.minY, w: r.width, h: r.height, fast: fast)
+        cacheLock.lock()
+        if let hit = cache.first(where: { $0.key == key && $0.image === image }) { cacheLock.unlock(); return hit.lines }
+        cacheLock.unlock()
+        let lines = try recognize(image, region: region, fast: fast)
+        cacheLock.lock()
+        cache.append(Entry(key: key, image: image, lines: lines))
+        if cache.count > cacheSize { cache.removeFirst(cache.count - cacheSize) }
+        cacheLock.unlock()
+        return lines
+    }
+
+    private static func recognize(_ image: CGImage, region: CGRect?, fast: Bool) throws -> [Line] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = fast ? .fast : .accurate
         request.usesLanguageCorrection = false            // codes/numbers aren't words
